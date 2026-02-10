@@ -160,6 +160,9 @@ class MetricsCollector:
         # ============================================
         try:
             result = self.rpc.call("getTokenLargestAccounts", [mint_address])
+            if not result or "result" not in result:
+                logger.warning(f"⚠️ Token {mint_address[:16]}... no encontrado en blockchain (posiblemente cerrado)")
+                return None, None
             accounts = result.get("result", {}).get("value", [])
         except Exception as e:
             logger.error(f"Error en getTokenLargestAccounts: {e}")
