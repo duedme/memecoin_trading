@@ -458,6 +458,11 @@ COMMENT ON COLUMN wallet_transactions.is_partial IS 'TRUE si esta transacción e
 COMMENT ON COLUMN wallet_transactions.order_id IS 'ID de la orden para agrupar transacciones parciales';
 COMMENT ON COLUMN wallet_transactions.partial_fill_index IS 'Número secuencial de la parte (1, 2, 3...)';
 
+-- ============================================
+-- POOL ADDRESS PARA CACHE
+-- ============================================
+ALTER TABLE tokens ADD COLUMN IF NOT EXISTS pool_address VARCHAR(44);
+CREATE INDEX IF NOT EXISTS idx_tokens_pool ON tokens(pool_address);
 
 -- ============================================
 -- FIN DEL SCHEMA
