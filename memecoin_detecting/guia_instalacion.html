@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guía de Instalación - Sistema Memecoins</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --surface: #1e293b;
+            --text: #f1f5f9;
+            --text-dim: #cbd5e1;
+            --accent: #38bdf8;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+            padding-bottom: 2rem;
+            border-bottom: 2px solid var(--surface);
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+            color: var(--accent);
+        }
+        
+        .subtitle {
+            color: var(--text-dim);
+            font-size: 1.1rem;
+        }
+        
+        .step {
+            background: var(--surface);
+            padding: 2rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            border-left: 4px solid var(--accent);
+        }
+        
+        .step-number {
+            display: inline-block;
+            background: var(--accent);
+            color: var(--bg);
+            width: 2rem;
+            height: 2rem;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 2rem;
+            font-weight: bold;
+            margin-right: 1rem;
+        }
+        
+        h2 {
+            display: inline-block;
+            margin-bottom: 1rem;
+            color: var(--accent);
+        }
+        
+        code {
+            background: var(--bg);
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            color: var(--success);
+        }
+        
+        pre {
+            background: var(--bg);
+            padding: 1.5rem;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 1rem 0;
+            border: 1px solid #334155;
+        }
+        
+        pre code {
+            background: none;
+            padding: 0;
+            color: var(--text);
+        }
+        
+        .command {
+            color: var(--accent);
+        }
+        
+        .comment {
+            color: #64748b;
+        }
+        
+        .warning {
+            background: rgba(245, 158, 11, 0.1);
+            border-left: 4px solid var(--warning);
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 4px;
+        }
+        
+        .success {
+            background: rgba(16, 185, 129, 0.1);
+            border-left: 4px solid var(--success);
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 4px;
+        }
+        
+        .file-structure {
+            background: var(--bg);
+            padding: 1rem;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            margin: 1rem 0;
+        }
+        
+        .file-structure .folder { color: #38bdf8; }
+        .file-structure .file { color: #10b981; }
+        
+        ul {
+            margin-left: 2rem;
+            margin-top: 1rem;
+        }
+        
+        li {
+            margin-bottom: 0.5rem;
+        }
+        
+        .btn {
+            display: inline-block;
+            background: var(--accent);
+            color: var(--bg);
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: 600;
+            margin-top: 1rem;
+            transition: transform 0.2s;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+        
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--surface);
+        }
+        
+        th {
+            background: var(--bg);
+            color: var(--accent);
+            font-weight: 600;
+        }
+        
+        .status-ok { color: var(--success); }
+        .status-pending { color: var(--warning); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 Sistema de Detección de Memecoins</h1>
+            <p class="subtitle">Guía completa de instalación y configuración</p>
+        </header>
+
+        <div class="step">
+            <h2><span class="step-number">1</span>Crear Base de Datos PostgreSQL</h2>
+            <p>Primero, crea la base de datos y habilita TimescaleDB:</p>
+            <pre><code><span class="comment"># Crear base de datos</span>
+<span class="command">sudo -u postgres createdb memecoins_db</span>
+
+<span class="comment"># Conectar a la base de datos</span>
+<span class="command">sudo -u postgres psql memecoins_db</span>
+
+<span class="comment"># Dentro de psql, habilitar TimescaleDB:</span>
+CREATE EXTENSION IF NOT EXISTS timescaledb;</code></pre>
+        </div>
+
+        <div class="step">
+            <h2><span class="step-number">2</span>Crear el Schema SQL</h2>
+            <p>Guarda este archivo como <code>setup_database.sql</code>:</p>
+            <pre><code><span class="comment">-- ========================================</span>
+<span class="comment">-- TABLA DE TOKENS (PostgreSQL normal)</span>
+<span class="comment">-- ========================================</span>
