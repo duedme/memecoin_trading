@@ -154,16 +154,21 @@ class MetricsCollector:
         if cached_pool:
             price = self._get_price_from_known_pool(cached_pool, mint_address)
             return cached_pool, price
+
+        logger.debug(f"🔍 Buscando pool para {mint_address[:16]}...")
         
         # ============================================
         # PASO 1: ¿Quién tiene más tokens de esta moneda?
         # ============================================
         try:
             result = self.rpc.call("getTokenLargestAccounts", [mint_address])
+
             if not result or "result" not in result:
                 logger.warning(f"⚠️ Token {mint_address[:16]}... no encontrado en blockchain (posiblemente cerrado)")
                 return None, None
+            
             accounts = result.get("result", {}).get("value", [])
+            
         except Exception as e:
             logger.error(f"Error en getTokenLargestAccounts: {e}")
             return None, None
@@ -271,12 +276,13 @@ class MetricsCollector:
         """
         try:
             # Obtener SOL del pool
-            result = self.rpc.call("getAccountInfo", [
-                pool_address,
-                {"encoding": "jsonParsed"}
-            ])
-            pool_data = result.get("result", {}).get("value", {})
-            
+            result = self.rpc.call("getAccountInfo", [pool_address, {"encoding": "jsonParsed"}])
+
+            if not result or "result" not in result:
+                return 0
+
+            pool_data = result.get("result", {}).get("value", {}) 
+
             if not pool_data:
                 return 0
             
@@ -286,6 +292,10 @@ class MetricsCollector:
             
             # Obtener tokens en el pool
             result = self.rpc.call("getTokenLargestAccounts", [mint_address])
+            
+            if not result or "result" not in result:    # ← 🔥 FIX 1
+                return 0
+            
             accounts = result.get("result", {}).get("value", [])
             
             if not accounts:
@@ -297,6 +307,10 @@ class MetricsCollector:
                     acc["address"],
                     {"encoding": "jsonParsed"}
                 ])
+                
+                if not acc_result or "result" not in acc_result:    # ← 🔥 FIX 2
+                    continue
+                
                 acc_data = acc_result.get("result", {}).get("value", {})
                 if not acc_data:
                     continue
@@ -317,6 +331,7 @@ class MetricsCollector:
         except Exception as e:
             logger.error(f"Error obteniendo precio de pool conocido: {e}")
             return 0
+
 
     def _save_pool_to_db(self, mint_address: str, pool_address: str):
         """Guarda el pool en la BD para no buscarlo de nuevo"""
@@ -439,6 +454,8 @@ class MetricsCollector:
                     metrics = self.collect_metrics_for_token(token)
                     if metrics:
                         metrics_batch.append(metrics)
+                    
+                    time.sleep(0.1)  # Pausa para no saturar nodo
                     
                     # Mostrar progreso cada 10 tokens
                     if (i + 1) % 10 == 0:
