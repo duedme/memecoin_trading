@@ -39,7 +39,7 @@ class SolanaRPC:
                 self.rpc_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=30
+                timeout=10
             )
             response.raise_for_status()
             result = response.json()
