@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-rpc_helpers.py
-Funciones auxiliares para interactuar con el nodo RPC de Solana
+rpc_helpers.py - Funciones auxiliares para interactuar con el nodo RPC de Solana
+Versión corregida con asyncio para paralelización
 """
 
 import json
+import asyncio
+import aiohttp
 import requests
 import time
 from typing import Dict, List, Optional, Any
@@ -14,24 +16,35 @@ logger = logging.getLogger(__name__)
 
 
 class SolanaRPC:
-    """Cliente RPC para Solana"""
+    """Cliente RPC para Solana (versión síncrona)"""
     
     def __init__(self, rpc_url: str = "http://127.0.0.1:7211"):
         self.rpc_url = rpc_url
         self.request_count = 0
+    
+    def call(self, method: str, params: List = None) -> Optional[Any]:
+        """
+        Realiza una llamada JSON-RPC al nodo
         
-    def call(self, method: str, params: List = None) -> Dict:
-        """Realiza una llamada JSON-RPC al nodo"""
+        IMPORTANTE: Retorna DIRECTAMENTE el contenido de result["result"]
+        Si hay error, retorna None
+        
+        Args:
+            method: Método RPC (ej: "getAccountInfo")
+            params: Lista de parámetros
+            
+        Returns:
+            El contenido de result["result"] o None si hay error
+        """
         if params is None:
             params = []
-            
+        
         payload = {
             "jsonrpc": "2.0",
             "id": self.request_count,
             "method": method,
             "params": params
         }
-        
         self.request_count += 1
         
         try:
@@ -39,7 +52,7 @@ class SolanaRPC:
                 self.rpc_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=10
+                timeout=30
             )
             response.raise_for_status()
             result = response.json()
@@ -47,9 +60,13 @@ class SolanaRPC:
             if "error" in result:
                 logger.error(f"RPC Error: {result['error']}")
                 return None
-                
+            
+            # Retornamos directamente el contenido de "result"
             return result.get("result")
             
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout en RPC call: {method}")
+            return None
         except Exception as e:
             logger.error(f"Error en RPC call {method}: {e}")
             return None
@@ -61,18 +78,17 @@ class SolanaRPC:
     def get_signatures_for_address(
         self, 
         address: str, 
-        limit: int = 10,
+        limit: int = 10, 
         before: Optional[str] = None,
         until: Optional[str] = None
     ) -> List[Dict]:
         """Obtiene firmas de transacciones para una dirección"""
         params = [address, {"limit": limit}]
-        
         if before:
             params[1]["before"] = before
         if until:
             params[1]["until"] = until
-            
+        
         result = self.call("getSignaturesForAddress", params)
         return result if result else []
     
@@ -92,135 +108,271 @@ class SolanaRPC:
         ])
     
     def get_token_accounts_by_owner(
-        self,
-        owner: str,
+        self, 
+        owner: str, 
         mint: Optional[str] = None,
         program_id: str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
     ) -> List[Dict]:
         """Obtiene cuentas de tokens de un propietario"""
         params = [owner, {"programId": program_id}]
-        
         if mint:
             params[1] = {"mint": mint}
-            
+        
         result = self.call("getTokenAccountsByOwner", params)
         if result and "value" in result:
             return result["value"]
         return []
     
     def get_program_accounts(
-        self,
-        program_id: str,
+        self, 
+        program_id: str, 
         filters: List[Dict] = None,
         data_slice: Dict = None,
         encoding: str = "jsonParsed"
     ) -> List[Dict]:
         """Obtiene cuentas de un programa con filtros"""
         config = {"encoding": encoding}
-        
         if filters:
             config["filters"] = filters
         if data_slice:
             config["dataSlice"] = data_slice
-            
+        
         result = self.call("getProgramAccounts", [program_id, config])
         return result if result else []
     
     def get_multiple_accounts(
-        self,
-        pubkeys: List[str],
+        self, 
+        pubkeys: List[str], 
         encoding: str = "jsonParsed"
     ) -> List[Dict]:
-        """Obtiene información de múltiples cuentas en una sola llamada"""
-        result = self.call("getMultipleAccountsInfo", [
-            pubkeys,
-            {"encoding": encoding}
-        ])
-        
+        """
+        Obtiene información de múltiples cuentas en una sola llamada
+        CORREGIDO: Era getMultipleAccountsInfo (incorrecto) → getMultipleAccounts
+        """
+        result = self.call("getMultipleAccounts", [pubkeys, {"encoding": encoding}])
         if result and "value" in result:
             return result["value"]
         return []
 
 
-def decode_pool_data(account_data: Dict, amm_type: str) -> Optional[Dict]:
-    """
-    Decodifica los datos de un pool según el tipo de AMM
-    Retorna: {
-        'reserves_base': int,
-        'reserves_quote': int,
-        'base_mint': str,
-        'quote_mint': str,
-        'decimals_base': int,
-        'decimals_quote': int
-    }
-    """
-    try:
-        if not account_data or "data" not in account_data:
-            return None
-        
-        data = account_data["data"]
-        
-        # Para pools parseados (jsonParsed)
-        if isinstance(data, dict) and "parsed" in data:
-            parsed = data["parsed"]["info"]
-            
-            # Estructura común en muchos AMMs
-            return {
-                "reserves_base": int(parsed.get("tokenAmount", {}).get("amount", 0)),
-                "reserves_quote": int(parsed.get("tokenAmount2", {}).get("amount", 0)),
-                "base_mint": parsed.get("mint", ""),
-                "quote_mint": parsed.get("mint2", ""),
-                "decimals_base": parsed.get("tokenAmount", {}).get("decimals", 9),
-                "decimals_quote": parsed.get("tokenAmount2", {}).get("decimals", 9)
-            }
-        
-        # Para datos raw (base64/base58)
-        # Aquí necesitarías parsers específicos por AMM
-        # Por ahora retornamos None
-        logger.warning(f"Pool data en formato raw para {amm_type}, parser no implementado")
-        return None
-        
-    except Exception as e:
-        logger.error(f"Error decodificando pool data: {e}")
-        return None
-
-
-def calculate_price_from_reserves(
-    reserves_base: int,
-    reserves_quote: int,
-    decimals_base: int = 9,
-    decimals_quote: int = 9,
-    invert: bool = False
-) -> float:
-    """
-    Calcula el precio de un token desde las reserves del pool
+class AsyncSolanaRPC:
+    """Cliente RPC asíncrono para Solana - permite múltiples llamadas en paralelo"""
     
-    Args:
-        reserves_base: Reserves del token base
-        reserves_quote: Reserves del token quote (usualmente SOL/USDC)
-        decimals_base: Decimales del token base
-        decimals_quote: Decimales del token quote
-        invert: Si True, invierte el precio (quote/base en lugar de base/quote)
+    def __init__(self, rpc_url: str = "http://127.0.0.1:7211", max_concurrent: int = 20):
+        self.rpc_url = rpc_url
+        self.request_count = 0
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.session = None
+    
+    async def __aenter__(self):
+        """Context manager para manejar sesión de aiohttp"""
+        self.session = aiohttp.ClientSession()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Cerrar sesión al salir del context manager"""
+        if self.session:
+            await self.session.close()
+    
+    async def call(self, method: str, params: List = None) -> Optional[Any]:
+        """
+        Llamada RPC asíncrona
+        
+        IMPORTANTE: Retorna DIRECTAMENTE el contenido de result["result"]
+        Si hay error, retorna None
+        """
+        if params is None:
+            params = []
+        
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self.request_count,
+            "method": method,
+            "params": params
+        }
+        self.request_count += 1
+        
+        async with self.semaphore:  # Limita concurrencia
+            try:
+                async with self.session.post(
+                    self.rpc_url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    result = await response.json()
+                    
+                    if "error" in result:
+                        logger.error(f"RPC Error: {result['error']}")
+                        return None
+                    
+                    return result.get("result")
+                    
+            except asyncio.TimeoutError:
+                logger.error(f"Timeout en RPC call: {method}")
+                return None
+            except Exception as e:
+                logger.error(f"Error en RPC call {method}: {e}")
+                return None
+    
+    async def get_account_info(self, pubkey: str, encoding: str = "jsonParsed") -> Optional[Dict]:
+        """Obtiene información de una cuenta (async)"""
+        return await self.call("getAccountInfo", [pubkey, {"encoding": encoding}])
+    
+    async def get_token_largest_accounts(self, mint: str) -> Optional[Dict]:
+        """Obtiene las cuentas con más tokens (async)"""
+        return await self.call("getTokenLargestAccounts", [mint])
+    
+    async def get_multiple_accounts(
+        self, 
+        pubkeys: List[str], 
+        encoding: str = "jsonParsed"
+    ) -> List[Dict]:
+        """Obtiene información de múltiples cuentas (async)"""
+        result = await self.call("getMultipleAccounts", [pubkeys, {"encoding": encoding}])
+        if result and "value" in result:
+            return result["value"]
+        return []
+
+
+# ============================================
+# FUNCIONES AUXILIARES PARA PARSEO
+# ============================================
+
+def parse_swap_transaction(tx: Dict) -> Optional[Dict]:
+    """
+    Parsea una transacción de swap y extrae información relevante
     
     Returns:
-        Precio del token
+        {
+            "signature": str,
+            "blocktime": int,
+            "wallet": str,
+            "token_in": str,
+            "token_out": str,
+            "amount_in": float,
+            "amount_out": float,
+            "type": "buy" | "sell",
+            "program_id": str,
+            "success": bool
+        }
     """
     try:
-        if reserves_base == 0 or reserves_quote == 0:
-            return 0.0
+        if not tx or "meta" not in tx:
+            return None
         
-        # Ajustar por decimales
-        base_adjusted = reserves_base / (10 ** decimals_base)
-        quote_adjusted = reserves_quote / (10 ** decimals_quote)
+        meta = tx["meta"]
         
-        if invert:
-            return quote_adjusted / base_adjusted
-        else:
-            return base_adjusted / quote_adjusted
+        # Analizar token balances pre y post
+        pre_balances = meta.get("preTokenBalances", [])
+        post_balances = meta.get("postTokenBalances", [])
+        
+        if not pre_balances or not post_balances:
+            return None
+        
+        # Construir mapa de cambios de balance por token
+        changes = {}
+        for pre in pre_balances:
+            mint = pre.get("mint")
+            account = pre.get("accountIndex")
+            amount = int(pre.get("uiTokenAmount", {}).get("amount", 0))
+            decimals = pre.get("uiTokenAmount", {}).get("decimals", 9)
+            changes[mint] = {
+                "pre": amount,
+                "post": amount,
+                "decimals": decimals,
+                "account": account
+            }
+        
+        for post in post_balances:
+            mint = post.get("mint")
+            account = post.get("accountIndex")
+            amount = int(post.get("uiTokenAmount", {}).get("amount", 0))
+            decimals = post.get("uiTokenAmount", {}).get("decimals", 9)
             
+            if mint in changes:
+                changes[mint]["post"] = amount
+            else:
+                changes[mint] = {
+                    "pre": 0,
+                    "post": amount,
+                    "decimals": decimals,
+                    "account": account
+                }
+        
+        # Identificar token in/out (el que sube es "in", el que baja es "out")
+        token_in_mint = None
+        token_out_mint = None
+        token_in_diff = 0
+        token_out_diff = 0
+        token_in_decimals = 9
+        token_out_decimals = 9
+        
+        for mint, data in changes.items():
+            diff = data["post"] - data["pre"]
+            if diff > 0:
+                token_in_mint = mint
+                token_in_diff = diff
+                token_in_decimals = data["decimals"]
+            elif diff < 0:
+                token_out_mint = mint
+                token_out_diff = abs(diff)
+                token_out_decimals = data["decimals"]
+        
+        if not token_in_mint or not token_out_mint:
+            return None
+        
+        # Extraer wallet (primer signer)
+        wallet = None
+        if "transaction" in tx and "message" in tx["transaction"]:
+            account_keys = tx["transaction"]["message"].get("accountKeys", [])
+            if account_keys:
+                wallet = account_keys[0] if isinstance(account_keys[0], str) else account_keys[0].get("pubkey")
+        
+        # Extraer información básica
+        signature = tx.get("transaction", {}).get("signatures", [None])[0]
+        blocktime = tx.get("blockTime")
+        
+        # Determinar programa usado
+        instructions = tx.get("transaction", {}).get("message", {}).get("instructions", [])
+        program_id = None
+        if instructions:
+            program_id = instructions[0].get("programId", {}).get("pubkey") if isinstance(instructions[0].get("programId"), dict) else instructions[0].get("programId")
+        
+        return {
+            "signature": signature,
+            "blocktime": blocktime,
+            "wallet": wallet,
+            "token_in": token_in_mint,
+            "token_out": token_out_mint,
+            "amount_in": token_in_diff / (10 ** token_in_decimals),
+            "amount_out": token_out_diff / (10 ** token_out_decimals),
+            "type": "buy" if token_out_diff > 0 else "sell",
+            "program_id": program_id,
+            "success": True
+        }
+        
     except Exception as e:
-        logger.error(f"Error calculando precio: {e}")
-        return 0.0
+        logger.error(f"Error parseando swap transaction: {e}")
+        return None
+
+
+def batch_process_transactions(transactions: List[Dict]) -> List[Dict]:
+    """
+    Procesa un lote de transacciones y extrae swaps
+    
+    Args:
+        transactions: Lista de transacciones crudas
+        
+    Returns:
+        Lista de swaps parseados
+    """
+    swaps = []
+    for tx in transactions:
+        swap = parse_swap_transaction(tx)
+        if swap:
+            swaps.append(swap)
+    return swaps
 
 
 def count_token_holders(rpc: SolanaRPC, mint_address: str) -> int:
@@ -230,14 +382,16 @@ def count_token_holders(rpc: SolanaRPC, mint_address: str) -> int:
     Args:
         rpc: Cliente RPC
         mint_address: Dirección del token mint
-    
+        
     Returns:
         Número de holders
     """
     try:
-        # Filtrar por mint address
+        # Filtros para getProgramAccounts
         filters = [
-            {"dataSize": 165},  # Tamaño de token account
+            {
+                "dataSize": 165  # Tamaño de TokenAccount
+            },
             {
                 "memcmp": {
                     "offset": 0,
@@ -260,151 +414,36 @@ def count_token_holders(rpc: SolanaRPC, mint_address: str) -> int:
         return 0
 
 
-def parse_swap_transaction(tx: Dict) -> Optional[Dict]:
+def calculate_price_from_pool(
+    reserves_base: int,
+    reserves_quote: int, 
+    decimals_base: int,
+    decimals_quote: int,
+    invert: bool = False
+) -> float:
     """
-    Parsea una transacción de swap y extrae información relevante
+    Calcula precio de un pool AMM usando x*y=k
     
+    Args:
+        reserves_base: Reservas del token base (raw)
+        reserves_quote: Reservas del token quote (raw)
+        decimals_base: Decimales del token base
+        decimals_quote: Decimales del token quote
+        invert: Si True, retorna quote/base en lugar de base/quote
+        
     Returns:
-        {
-            'signature': str,
-            'block_time': int,
-            'wallet': str,
-            'token_in': str,
-            'token_out': str,
-            'amount_in': float,
-            'amount_out': float,
-            'type': 'buy' | 'sell',
-            'program_id': str,
-            'success': bool
-        }
+        Precio calculado
     """
     try:
-        if not tx or "meta" not in tx:
-            return None
+        # Ajustar por decimales
+        base_adjusted = reserves_base / (10 ** decimals_base)
+        quote_adjusted = reserves_quote / (10 ** decimals_quote)
         
-        meta = tx["meta"]
-        
-        # Verificar que la transacción fue exitosa
-        if meta.get("err") is not None:
-            return None
-        
-        # Extraer información básica
-        signature = tx.get("transaction", {}).get("signatures", [None])[0]
-        block_time = tx.get("blockTime")
-        
-        # Analizar token balances pre y post
-        pre_balances = meta.get("preTokenBalances", [])
-        post_balances = meta.get("postTokenBalances", [])
-        
-        if not pre_balances or not post_balances:
-            return None
-        
-        # Encontrar cambios en balances
-        changes = []
-        for pre in pre_balances:
-            account = pre.get("accountIndex")
-            mint = pre.get("mint")
-            pre_amount = int(pre.get("uiTokenAmount", {}).get("amount", 0))
+        if invert:
+            return quote_adjusted / base_adjusted
+        else:
+            return base_adjusted / quote_adjusted
             
-            # Buscar el balance post correspondiente
-            post = next((p for p in post_balances if p.get("accountIndex") == account), None)
-            if post:
-                post_amount = int(post.get("uiTokenAmount", {}).get("amount", 0))
-                diff = post_amount - pre_amount
-                
-                if diff != 0:
-                    changes.append({
-                        "mint": mint,
-                        "diff": diff,
-                        "decimals": pre.get("uiTokenAmount", {}).get("decimals", 9)
-                    })
-        
-        # Si hay exactamente 2 cambios (entrada y salida), es un swap
-        if len(changes) == 2:
-            # El negativo es la entrada (lo que se pagó)
-            # El positivo es la salida (lo que se recibió)
-            token_in = next((c for c in changes if c["diff"] < 0), None)
-            token_out = next((c for c in changes if c["diff"] > 0), None)
-            
-            if token_in and token_out:
-                # Determinar wallet (fee payer)
-                wallet = tx.get("transaction", {}).get("message", {}).get("accountKeys", [{}])[0].get("pubkey", "")
-                
-                # Determinar programa usado
-                program_id = ""
-                instructions = tx.get("transaction", {}).get("message", {}).get("instructions", [])
-                if instructions:
-                    program_id = instructions[0].get("programId", {}).get("pubkey", "")
-                
-                return {
-                    "signature": signature,
-                    "block_time": block_time,
-                    "wallet": wallet,
-                    "token_in": token_in["mint"],
-                    "token_out": token_out["mint"],
-                    "amount_in": abs(token_in["diff"]) / (10 ** token_in["decimals"]),
-                    "amount_out": token_out["diff"] / (10 ** token_out["decimals"]),
-                    "type": "buy" if token_out["diff"] > 0 else "sell",
-                    "program_id": program_id,
-                    "success": True
-                }
-        
-        return None
-        
     except Exception as e:
-        logger.error(f"Error parseando swap transaction: {e}")
-        return None
-
-
-def batch_process_transactions(
-    rpc: SolanaRPC,
-    signatures: List[str],
-    max_workers: int = 5
-) -> List[Dict]:
-    """
-    Procesa múltiples transacciones en paralelo
-    
-    Args:
-        rpc: Cliente RPC
-        signatures: Lista de firmas a procesar
-        max_workers: Número de workers concurrentes
-    
-    Returns:
-        Lista de transacciones parseadas
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    
-    results = []
-    
-    def fetch_and_parse(sig):
-        tx = rpc.get_transaction(sig)
-        if tx:
-            return parse_swap_transaction(tx)
-        return None
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(fetch_and_parse, sig): sig for sig in signatures}
-        
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                if result:
-                    results.append(result)
-            except Exception as e:
-                logger.error(f"Error procesando transacción: {e}")
-    
-    return results
-
-
-def rate_limit_sleep(calls_made: int, max_calls_per_second: int = 50):
-    """
-    Implementa rate limiting simple
-    
-    Args:
-        calls_made: Número de llamadas realizadas en el periodo actual
-        max_calls_per_second: Límite de llamadas por segundo
-    """
-    if calls_made >= max_calls_per_second:
-        time.sleep(1)
-        return 0
-    return calls_made
+        logger.error(f"Error calculando precio: {e}")
+        return 0.0
