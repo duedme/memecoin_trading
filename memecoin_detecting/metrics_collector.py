@@ -45,24 +45,24 @@ RENT_EXEMPT_MINIMUM = 0.002  # SOL mínimo de renta
 
 class MetricsCollector:
     """Recopila métricas de tokens activos cada 10 segundos"""
-    
+
     def __init__(self, db_config: Dict, rpc_url: str = "http://127.0.0.1:7211"):
         self.db_config = db_config
         self.rpc = SolanaRPC(rpc_url)
         self.conn = None
         self.active_tokens = []
-        
+
         # Estadísticas
         self.metrics_collected = 0
         self.errors_count = 0
         self.start_time = datetime.now()
-        
+
     def connect_db(self):
         """Conecta a PostgreSQL"""
         try:
             if self.conn:
                 self.conn.close()
-            
+
             self.conn = psycopg2.connect(
                 host=self.db_config['host'],
                 port=self.db_config['port'],
@@ -71,21 +71,16 @@ class MetricsCollector:
                 password=self.db_config['password']
             )
             logger.info("Conectado a PostgreSQL")
-            
+
         except Exception as e:
             logger.error(f"Error conectando a PostgreSQL: {e}")
             raise
-    
+
     def load_active_tokens(self, hours: int = 1):
-        """
-        Carga tokens detectados en las últimas N horas
-        
-        Args:
-            hours: Número de horas hacia atrás (default: 1 hora para no saturar)
-        """
+        """Carga tokens detectados en las últimas N horas"""
         try:
             cursor = self.conn.cursor()
-            
+
             query = """
                 SELECT 
                     token_id,
@@ -100,10 +95,10 @@ class MetricsCollector:
                     AND status = 'active'
                 ORDER BY detected_at DESC
             """
-            
+
             cursor.execute(query, (hours,))
             tokens = cursor.fetchall()
-            
+
             self.active_tokens = [
                 {
                     'token_id': row[0],
@@ -116,23 +111,23 @@ class MetricsCollector:
                 }
                 for row in tokens
             ]
-            
+
             logger.info(f"Cargados {len(self.active_tokens)} tokens activos de las últimas {hours}h")
             cursor.close()
-            
+
         except Exception as e:
             logger.error(f"Error cargando tokens activos: {e}")
             self.active_tokens = []
-    
+
     def find_pool_and_price(self, mint_address: str):
         """
         Encuentra pool address Y calcula precio en una sola operación.
         Usa 3 llamadas RPC ligeras + verificación.
         Guarda el pool en BD para no buscarlo de nuevo.
-        
+
         Retorna: (pool_address, price_in_sol) o (None, None)
         """
-        
+
         # ============================================
         # PRIMERO: ¿Ya lo tenemos guardado en la BD?
         # ============================================
@@ -144,25 +139,25 @@ class MetricsCollector:
             )
             result = cursor.fetchone()
             cursor.close()
-            
+
             cached_pool = result[0] if result and result[0] else None
         except Exception as e:
             logger.error(f"Error leyendo pool de BD: {e}")
             cached_pool = None
-        
+
         # Si ya tenemos el pool, solo necesitamos el precio
         if cached_pool:
             price = self._get_price_from_known_pool(cached_pool, mint_address)
             return cached_pool, price
 
-        logger.debug(f"🔍 Buscando pool para {mint_address[:16]}...")
-        
+        logger.debug(f"Buscando pool para {mint_address[:16]}...")
+
         # ============================================
         # PASO 1: ¿Quién tiene más tokens de esta moneda?
         # ============================================
         try:
             result = self.rpc.call("getTokenLargestAccounts", [mint_address])
-            
+
             # Si el RPC devuelve error, el token no existe
             if "error" in result:
                 error_msg = result["error"].get("message", "")
@@ -171,28 +166,22 @@ class MetricsCollector:
                     return None, None  # Señal para marcarlo como dead
                 logger.error(f"RPC error para {mint_address[:16]}...: {error_msg}")
                 return None, None
-            
+
             accounts = result.get("result", {}).get("value", [])
         except Exception as e:
             logger.error(f"Error en getTokenLargestAccounts: {e}")
             return None, None
 
-            
-            
-        except Exception as e:
-            logger.error(f"Error en getTokenLargestAccounts: {e}")
-            return None, None
-        
         if not accounts:
-            logger.warning(f"❌ Sin holders para {mint_address[:16]}...")
+            logger.warning(f"Sin holders para {mint_address[:16]}...")
             return None, None
-        
+
         # Intentar con las primeras cuentas (por si la primera es un whale)
         for i, largest in enumerate(accounts[:3]):
             largest_token_account = largest["address"]
             token_amount_raw = int(largest["amount"])
             token_decimals = largest["decimals"]
-            
+
             # ============================================
             # PASO 2: ¿Quién controla esa token account?
             # ============================================
@@ -205,16 +194,16 @@ class MetricsCollector:
             except Exception as e:
                 logger.error(f"Error en getAccountInfo (token account): {e}")
                 continue
-            
+
             if not account_data:
                 continue
-            
+
             parsed = account_data.get("data", {}).get("parsed", {})
             pool_candidate = parsed.get("info", {}).get("owner")
-            
+
             if not pool_candidate:
                 continue
-            
+
             # ============================================
             # PASO 3: ¿El candidato pertenece a un AMM?
             # ============================================
@@ -227,30 +216,30 @@ class MetricsCollector:
             except Exception as e:
                 logger.error(f"Error en getAccountInfo (pool): {e}")
                 continue
-            
+
             if not pool_data:
                 continue
-            
+
             pool_owner = pool_data.get("owner")
-            
+
             # ============================================
             # VERIFICACIÓN: ¿Es un AMM conocido?
             # ============================================
             if pool_owner in AMM_PROGRAM_IDS:
                 amm_name = AMM_PROGRAM_IDS[pool_owner]
-                
+
                 # Calcular precio
                 sol_lamports = pool_data.get("lamports", 0)
                 sol_balance = sol_lamports / 1_000_000_000
                 sol_for_price = max(sol_balance - RENT_EXEMPT_MINIMUM, 0)
-                
+
                 token_balance = token_amount_raw / (10 ** token_decimals)
-                
+
                 if token_balance > 0 and sol_for_price > 0:
                     price_in_sol = sol_for_price / token_balance
                 else:
                     price_in_sol = 0
-                
+
                 logger.info(
                     f"✅ {mint_address[:16]}... | "
                     f"Pool: {pool_candidate[:16]}... ({amm_name}) | "
@@ -258,32 +247,29 @@ class MetricsCollector:
                     f"Tokens: {token_balance:,.0f} | "
                     f"Precio: {price_in_sol:.12f} SOL"
                 )
-                
+
                 # Guardar pool en BD para la próxima vez
                 self._save_pool_to_db(mint_address, pool_candidate)
-                
+
                 return pool_candidate, price_in_sol
-            
+
             else:
-                # No es un AMM, probablemente un whale
                 logger.debug(
-                    f"⚠️  Cuenta #{i} ({pool_candidate[:16]}...) "
+                    f"Cuenta #{i} ({pool_candidate[:16]}...) "
                     f"no es AMM (owner: {pool_owner[:16]}...), "
                     f"intentando siguiente..."
                 )
                 continue
-        
+
         # Ninguna de las 3 cuentas más grandes era un pool
         logger.warning(
-            f"❌ No se encontró pool para {mint_address[:16]}... "
+            f"No se encontró pool para {mint_address[:16]}... "
             f"(las 3 cuentas más grandes no pertenecen a ningún AMM)"
         )
         return None, None
 
     def _get_price_from_known_pool(self, pool_address: str, mint_address: str) -> float:
-        """
-        Si ya conocemos el pool, solo necesitamos 2 llamadas para el precio.
-        """
+        """Si ya conocemos el pool, solo necesitamos 2 llamadas para el precio."""
         try:
             # Obtener SOL del pool
             result = self.rpc.call("getAccountInfo", [pool_address, {"encoding": "jsonParsed"}])
@@ -291,57 +277,56 @@ class MetricsCollector:
             if not result or "result" not in result:
                 return 0
 
-            pool_data = result.get("result", {}).get("value", {}) 
+            pool_data = result.get("result", {}).get("value", {})
 
             if not pool_data:
                 return 0
-            
+
             sol_lamports = pool_data.get("lamports", 0)
             sol_balance = sol_lamports / 1_000_000_000
             sol_for_price = max(sol_balance - RENT_EXEMPT_MINIMUM, 0)
-            
+
             # Obtener tokens en el pool
             result = self.rpc.call("getTokenLargestAccounts", [mint_address])
-            
-            if not result or "result" not in result:    # ← 🔥 FIX 1
+
+            if not result or "result" not in result:
                 return 0
-            
+
             accounts = result.get("result", {}).get("value", [])
-            
+
             if not accounts:
                 return 0
-            
+
             # Buscar la token account que pertenece a este pool
             for acc in accounts[:5]:
                 acc_result = self.rpc.call("getAccountInfo", [
                     acc["address"],
                     {"encoding": "jsonParsed"}
                 ])
-                
-                if not acc_result or "result" not in acc_result:    # ← 🔥 FIX 2
+
+                if not acc_result or "result" not in acc_result:
                     continue
-                
+
                 acc_data = acc_result.get("result", {}).get("value", {})
                 if not acc_data:
                     continue
-                
+
                 parsed = acc_data.get("data", {}).get("parsed", {})
                 owner = parsed.get("info", {}).get("owner")
-                
+
                 if owner == pool_address:
                     token_amount = int(acc["amount"])
                     decimals = acc["decimals"]
                     token_balance = token_amount / (10 ** decimals)
-                    
+
                     if token_balance > 0 and sol_for_price > 0:
                         return sol_for_price / token_balance
-            
+
             return 0
-            
+
         except Exception as e:
             logger.error(f"Error obteniendo precio de pool conocido: {e}")
             return 0
-
 
     def _save_pool_to_db(self, mint_address: str, pool_address: str):
         """Guarda el pool en la BD para no buscarlo de nuevo"""
@@ -373,62 +358,59 @@ class MetricsCollector:
             logger.error(f"Error marcando token como dead: {e}")
             self.conn.rollback()
 
+    def collect_metrics_for_token(self, token: Dict) -> Optional[Dict]:
+        """Recopila todas las métricas para un token"""
+        try:
+            mint_address = token['mint_address']
 
-def collect_metrics_for_token(self, token: Dict) -> Optional[Dict]:
-    """Recopila todas las métricas para un token"""
-    try:
-        mint_address = token['mint_address']
-        
-        # Obtener pool y precio en una sola llamada
-        pool_address, price_in_sol = self.find_pool_and_price(mint_address)
-        
-        if pool_address is None and price_in_sol is None:
-            # Token muerto o no encontrado → marcarlo como dead
-            self._mark_token_dead(mint_address)
-            return None
-        
-        if not price_in_sol or price_in_sol <= 0:
-            return None
-        
-        # Calcular market cap y FDV
-        total_supply = float(token.get('total_supply', 0))
-        decimals = token.get('decimals', 9)
-        supply = total_supply / (10 ** decimals)
-        market_cap = price_in_sol * supply
-        fdv = market_cap
-        
-        return {
-            'time': datetime.now(),
-            'token_id': token['token_id'],
-            'price': price_in_sol,
-            'liquidity': 0,
-            'volume_10s': 0,
-            'volume_1m': 0,
-            'volume_5m': 0,
-            'volume_1h': 0,
-            'volume_24h': 0,
-            'market_cap': market_cap,
-            'fdv': fdv,
-            'holders_count': 0,
-            'transactions_count': 0,
-            'pool_address': pool_address
-        }
-        
-    except Exception as e:
-        logger.error(f"Error recopilando métricas para token {token['token_id']}: {e}")
-        self.errors_count += 1
-        return None
+            # Obtener pool y precio en una sola llamada
+            pool_address, price_in_sol = self.find_pool_and_price(mint_address)
 
-    
+            if pool_address is None and price_in_sol is None:
+                # Token muerto o no encontrado → marcarlo como dead
+                self._mark_token_dead(mint_address)
+                return None
+
+            if not price_in_sol or price_in_sol <= 0:
+                return None
+
+            # Calcular market cap y FDV
+            total_supply = float(token.get('total_supply', 0))
+            decimals = token.get('decimals', 9)
+            supply = total_supply / (10 ** decimals)
+            market_cap = price_in_sol * supply
+            fdv = market_cap
+
+            return {
+                'time': datetime.now(),
+                'token_id': token['token_id'],
+                'price': price_in_sol,
+                'liquidity': 0,
+                'volume_10s': 0,
+                'volume_1m': 0,
+                'volume_5m': 0,
+                'volume_1h': 0,
+                'volume_24h': 0,
+                'market_cap': market_cap,
+                'fdv': fdv,
+                'holders_count': 0,
+                'transactions_count': 0,
+                'pool_address': pool_address
+            }
+
+        except Exception as e:
+            logger.error(f"Error recopilando métricas para token {token['token_id']}: {e}")
+            self.errors_count += 1
+            return None
+
     def save_metrics(self, metrics_batch: List[Dict]):
         """Guarda un lote de métricas en la BD"""
         try:
             if not metrics_batch:
                 return
-            
+
             cursor = self.conn.cursor()
-            
-            # Preparar datos para inserción masiva
+
             values = [
                 (
                     m['time'],
@@ -448,7 +430,7 @@ def collect_metrics_for_token(self, token: Dict) -> Optional[Dict]:
                 )
                 for m in metrics_batch
             ]
-            
+
             query = """
                 INSERT INTO token_metrics (
                     time, token_id, price, liquidity,
@@ -462,54 +444,53 @@ def collect_metrics_for_token(self, token: Dict) -> Optional[Dict]:
                     volume_10s = EXCLUDED.volume_10s,
                     holders_count = EXCLUDED.holders_count
             """
-            
+
             execute_values(cursor, query, values)
             self.conn.commit()
             cursor.close()
-            
+
             self.metrics_collected += len(metrics_batch)
             logger.info(f"✅ Guardadas {len(metrics_batch)} métricas")
-            
+
         except Exception as e:
             logger.error(f"Error guardando métricas: {e}")
             self.conn.rollback()
             self.errors_count += 1
-    
+
     def run_collection_cycle(self):
         """Ejecuta un ciclo de recopilación de métricas"""
         try:
             logger.info(f"Iniciando ciclo de recopilación para {len(self.active_tokens)} tokens")
-            
+
             metrics_batch = []
-            
+
             for i, token in enumerate(self.active_tokens):
                 try:
                     metrics = self.collect_metrics_for_token(token)
                     if metrics:
                         metrics_batch.append(metrics)
-                    
-                    time.sleep(0.1)
-                    
+
+                    time.sleep(0.1)  # Pausa para no saturar nodo
+
                     if (i + 1) % 10 == 0:
                         logger.info(f"Progreso: {i + 1}/{len(self.active_tokens)} tokens procesados")
                 except Exception as e:
                     logger.error(f"Error procesando token {token['token_id']}: {e}")
                     continue
-            
-            # Guardar todas las métricas
+
             if metrics_batch:
                 self.save_metrics(metrics_batch)
-            
+
             return len(metrics_batch)
-            
+
         except Exception as e:
             logger.error(f"Error en ciclo de recopilación: {e}")
             return 0
-    
+
     def print_stats(self):
         """Imprime estadísticas del collector"""
         uptime = datetime.now() - self.start_time
-        
+
         logger.info("=" * 60)
         logger.info("📊 ESTADÍSTICAS DEL METRICS COLLECTOR")
         logger.info("=" * 60)
@@ -517,54 +498,49 @@ def collect_metrics_for_token(self, token: Dict) -> Optional[Dict]:
         logger.info(f"Tokens activos monitoreados: {len(self.active_tokens)}")
         logger.info(f"Métricas recopiladas: {self.metrics_collected}")
         logger.info(f"Errores: {self.errors_count}")
-        
+
         if self.metrics_collected > 0:
             success_rate = (1 - self.errors_count / max(self.metrics_collected, 1)) * 100
             logger.info(f"Tasa de éxito: {success_rate:.2f}%")
-        
+
         logger.info("=" * 60)
-    
+
     def run(self, reload_interval_minutes: int = 10):
-        """
-        Bucle principal del collector
-        
-        Args:
-            reload_interval_minutes: Cada cuántos minutos recargar la lista de tokens activos
-        """
+        """Bucle principal del collector"""
         logger.info("🚀 Iniciando MetricsCollector...")
-        
+
         self.connect_db()
-        self.load_active_tokens(hours=1)  # Solo última hora
-        
+        self.load_active_tokens(hours=1)
+
         last_reload = datetime.now()
         cycle_count = 0
-        
+
         try:
             while True:
                 cycle_start = time.time()
-                
+
                 # Recargar tokens si es necesario
                 if datetime.now() - last_reload >= timedelta(minutes=reload_interval_minutes):
                     logger.info("Recargando lista de tokens activos...")
                     self.load_active_tokens(hours=1)
                     last_reload = datetime.now()
-                
+
                 # Ejecutar ciclo de recopilación
                 metrics_count = self.run_collection_cycle()
-                
+
                 cycle_count += 1
-                
+
                 # Mostrar stats cada 10 ciclos
                 if cycle_count % 10 == 0:
                     self.print_stats()
-                
+
                 # Calcular tiempo de espera
                 elapsed = time.time() - cycle_start
-                wait_time = max(0, 10 - elapsed)  # 10 segundos entre ciclos
-                
+                wait_time = max(0, 10 - elapsed)
+
                 logger.info(f"Ciclo completado en {elapsed:.2f}s. Esperando {wait_time:.2f}s...")
                 time.sleep(wait_time)
-                
+
         except KeyboardInterrupt:
             logger.info("\n⚠️  Deteniendo MetricsCollector...")
             self.print_stats()
@@ -578,7 +554,6 @@ def collect_metrics_for_token(self, token: Dict) -> Optional[Dict]:
 
 
 if __name__ == "__main__":
-    # Configuración de la base de datos
     DB_CONFIG = {
         "host": "localhost",
         "port": 5432,
@@ -586,10 +561,8 @@ if __name__ == "__main__":
         "user": "postgres",
         "password": "12345"
     }
-    
-    # Configuración del RPC
+
     RPC_URL = "http://127.0.0.1:7211"
-    
-    # Crear y ejecutar collector
+
     collector = MetricsCollector(DB_CONFIG, RPC_URL)
     collector.run(reload_interval_minutes=10)
