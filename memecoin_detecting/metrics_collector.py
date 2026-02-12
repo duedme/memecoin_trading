@@ -162,12 +162,22 @@ class MetricsCollector:
         # ============================================
         try:
             result = self.rpc.call("getTokenLargestAccounts", [mint_address])
-
-            if not result or "result" not in result:
-                logger.warning(f"⚠️ Token {mint_address[:16]}... no encontrado en blockchain (posiblemente cerrado)")
+            
+            # Si el RPC devuelve error, el token no existe
+            if "error" in result:
+                error_msg = result["error"].get("message", "")
+                if "could not find mint" in error_msg:
+                    logger.warning(f"⚠️ Token {mint_address[:16]}... no encontrado en blockchain (posiblemente cerrado)")
+                    return None, None  # Señal para marcarlo como dead
+                logger.error(f"RPC error para {mint_address[:16]}...: {error_msg}")
                 return None, None
             
             accounts = result.get("result", {}).get("value", [])
+        except Exception as e:
+            logger.error(f"Error en getTokenLargestAccounts: {e}")
+            return None, None
+
+            
             
         except Exception as e:
             logger.error(f"Error en getTokenLargestAccounts: {e}")
@@ -346,46 +356,69 @@ class MetricsCollector:
         except Exception as e:
             logger.error(f"Error guardando pool en BD: {e}")
             self.conn.rollback()
-    
-    def collect_metrics_for_token(self, token: Dict) -> Optional[Dict]:
-        """Recopila todas las métricas para un token"""
+
+    def _mark_token_dead(self, mint_address: str):
+        """Marca un token como dead para no volver a consultarlo"""
         try:
-            mint_address = token['mint_address']
-            
-            # Obtener pool y precio en una sola llamada
-            pool_address, price_in_sol = self.find_pool_and_price(mint_address)
-            
-            if not pool_address or not price_in_sol or price_in_sol <= 0:
-                return None
-            
-            # Calcular market cap y FDV
-            total_supply = float(token.get('total_supply', 0))
-            decimals = token.get('decimals', 9)
-            supply = total_supply / (10 ** decimals)
-            market_cap = price_in_sol * supply
-            fdv = market_cap
-            
-            return {
-                'time': datetime.now(),
-                'token_id': token['token_id'],
-                'price': price_in_sol,
-                'liquidity': 0,  # TODO: Calcular desde pool
-                'volume_10s': 0,  # TODO: Desde transacciones monitoreadas
-                'volume_1m': 0,
-                'volume_5m': 0,
-                'volume_1h': 0,
-                'volume_24h': 0,
-                'market_cap': market_cap,
-                'fdv': fdv,
-                'holders_count': 0,  # TODO: Implementar count_token_holders
-                'transactions_count': 0,
-                'pool_address': pool_address
-            }
-            
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE tokens SET status = 'dead' WHERE mint_address = %s AND status = 'active'",
+                (mint_address,)
+            )
+            if cursor.rowcount > 0:
+                logger.info(f"💀 Token {mint_address[:16]}... marcado como dead")
+            self.conn.commit()
+            cursor.close()
         except Exception as e:
-            logger.error(f"Error recopilando métricas para token {token['token_id']}: {e}")
-            self.errors_count += 1
+            logger.error(f"Error marcando token como dead: {e}")
+            self.conn.rollback()
+
+
+def collect_metrics_for_token(self, token: Dict) -> Optional[Dict]:
+    """Recopila todas las métricas para un token"""
+    try:
+        mint_address = token['mint_address']
+        
+        # Obtener pool y precio en una sola llamada
+        pool_address, price_in_sol = self.find_pool_and_price(mint_address)
+        
+        if pool_address is None and price_in_sol is None:
+            # Token muerto o no encontrado → marcarlo como dead
+            self._mark_token_dead(mint_address)
             return None
+        
+        if not price_in_sol or price_in_sol <= 0:
+            return None
+        
+        # Calcular market cap y FDV
+        total_supply = float(token.get('total_supply', 0))
+        decimals = token.get('decimals', 9)
+        supply = total_supply / (10 ** decimals)
+        market_cap = price_in_sol * supply
+        fdv = market_cap
+        
+        return {
+            'time': datetime.now(),
+            'token_id': token['token_id'],
+            'price': price_in_sol,
+            'liquidity': 0,
+            'volume_10s': 0,
+            'volume_1m': 0,
+            'volume_5m': 0,
+            'volume_1h': 0,
+            'volume_24h': 0,
+            'market_cap': market_cap,
+            'fdv': fdv,
+            'holders_count': 0,
+            'transactions_count': 0,
+            'pool_address': pool_address
+        }
+        
+    except Exception as e:
+        logger.error(f"Error recopilando métricas para token {token['token_id']}: {e}")
+        self.errors_count += 1
+        return None
+
     
     def save_metrics(self, metrics_batch: List[Dict]):
         """Guarda un lote de métricas en la BD"""
@@ -455,12 +488,10 @@ class MetricsCollector:
                     if metrics:
                         metrics_batch.append(metrics)
                     
-                    time.sleep(0.1)  # Pausa para no saturar nodo
+                    time.sleep(0.1)
                     
-                    # Mostrar progreso cada 10 tokens
                     if (i + 1) % 10 == 0:
                         logger.info(f"Progreso: {i + 1}/{len(self.active_tokens)} tokens procesados")
-                    
                 except Exception as e:
                     logger.error(f"Error procesando token {token['token_id']}: {e}")
                     continue
