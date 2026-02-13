@@ -75,47 +75,46 @@ class MetricsCollector:
             logger.error(f"Error conectando a PostgreSQL: {e}")
             raise
     
-    def load_active_tokens(self, hours: int = 1):
-        """
-        Carga tokens detectados en las últimas N horas
+    def load_active_tokens(self, hours: int = 24):
+        """Carga tokens activos priorizando los que tienen pool cacheado"""
+        cursor = self.conn.cursor()
         
-        Args:
-            hours: Número de horas hacia atrás (default: 1 hora para no saturar)
+        # Primero: tokens con pool ya cacheado (baratos: 1 batch call)
+        # Después: tokens sin pool pero recientes (caros: 3-7 calls cada uno)
+        query = """
+            SELECT token_id, mint_address, amm, name, symbol, decimals, total_supply, pool_address
+            FROM tokens 
+            WHERE status = 'active'
+            AND detected_at > NOW() - INTERVAL '%s hours'
+            ORDER BY 
+                CASE WHEN pool_address IS NOT NULL THEN 0 ELSE 1 END,
+                detected_at DESC
+            LIMIT 500
         """
-        try:
-            cursor = self.conn.cursor()
-            query = """
-                SELECT 
-                    token_id, mint_address, amm, name, symbol, 
-                    decimals, total_supply, pool_address
-                FROM tokens 
-                WHERE detected_at > NOW() - INTERVAL '%s hours'
-                AND status = 'active'
-                ORDER BY detected_at DESC
-            """
-            cursor.execute(query, (hours,))
-            tokens = cursor.fetchall()
-            
-            self.active_tokens = [
-                {
-                    "token_id": row[0],
-                    "mint_address": row[1],
-                    "amm": row[2],
-                    "name": row[3],
-                    "symbol": row[4],
-                    "decimals": row[5] or 9,
-                    "total_supply": row[6] or 0,
-                    "pool_address": row[7]  # Puede ser None si no se ha encontrado aún
-                }
-                for row in tokens
-            ]
-            
-            logger.info(f"Cargados {len(self.active_tokens)} tokens activos de las últimas {hours}h")
-            cursor.close()
-            
-        except Exception as e:
-            logger.error(f"Error cargando tokens activos: {e}")
-            self.active_tokens = []
+        
+        cursor.execute(query, (hours,))
+        tokens = cursor.fetchall()
+        
+        self.active_tokens = [
+            {
+                'token_id': row[0],
+                'mint_address': row[1],
+                'amm': row[2],
+                'name': row[3],
+                'symbol': row[4],
+                'decimals': row[5] or 9,
+                'total_supply': row[6] or 0,
+                'pool_address': row[7]
+            }
+            for row in tokens
+        ]
+        
+        with_pool = sum(1 for t in self.active_tokens if t.get('pool_address'))
+        without_pool = len(self.active_tokens) - with_pool
+        
+        logger.info(f"✓ Cargados {len(self.active_tokens)} tokens (pool: {with_pool} | sin pool: {without_pool})")
+        cursor.close()
+
     
     async def find_pool_and_price_async(self, rpc: AsyncSolanaRPC, mint_address: str) -> tuple:
         """
@@ -617,4 +616,4 @@ if __name__ == "__main__":
     
     # Crear y ejecutar collector
     collector = MetricsCollector(DB_CONFIG, RPC_URL)
-    collector.run(reload_interval_minutes=10)
+    collector.run(reload_interval_minutes=5)
