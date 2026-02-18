@@ -1,27 +1,69 @@
 #!/usr/bin/env python3
 """
 metrics_collector.py - Recopila métricas de tokens cada 10 segundos
-Versión con asyncio para procesar múltiples tokens en paralelo + cálculo de volumen
+Versión HÍBRIDA: localhost para volumen, RPCs externos para pools/precios
+Round-robin ponderado con backoff entre proveedores externos
 """
 
 import psycopg2
 from psycopg2.extras import execute_values
 import asyncio
+import aiohttp
 import time
+import random
 from datetime import datetime, timedelta
 import logging
-from typing import List, Dict, Optional
-from rpc_helpers import SolanaRPC, AsyncSolanaRPC
+from typing import List, Dict, Optional, Any
+from collections import defaultdict
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/home/rebelforce/scripts/memecoin_detecting/metrics_collector.log'),
+        logging.FileHandler('/home/rebelforce/scripts/memecoindetecting/metrics_collector.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# CONFIGURACIÓN DE PROVEEDORES RPC
+# ============================================================
+
+# Nodo local - SOLO para getSignaturesForAddress y getTransaction
+LOCAL_RPC_URL = "http://127.0.0.1:7211"
+
+# Proveedores externos - Para getTokenLargestAccounts, getAccountInfo, getMultipleAccounts
+EXTERNAL_RPC_PROVIDERS = [
+    {
+        "name": "Helius",
+        "url": "https://mainnet.helius-rpc.com/?api-key=TU_API_KEY_HELIUS",
+        "weight": 2,
+        "rate_limit": 10,  # req/s
+        "has_das": True,  # Soporta DAS API para holders
+    },
+    {
+        "name": "Alchemy",
+        "url": "https://solana-mainnet.g.alchemy.com/v2/TU_API_KEY_ALCHEMY",
+        "weight": 3,
+        "rate_limit": 25,
+        "has_das": False,
+    },
+    {
+        "name": "QuickNode",
+        "url": "https://YOUR_ENDPOINT.solana-mainnet.quiknode.pro/TU_API_KEY/",
+        "weight": 2,
+        "rate_limit": 15,
+        "has_das": False,
+    },
+    {
+        "name": "Chainstack",
+        "url": "https://solana-mainnet.core.chainstack.com/TU_API_KEY",
+        "weight": 2,
+        "rate_limit": 10,
+        "has_das": False,
+    },
+]
 
 # Los 12 AMM Program IDs para verificación
 AMM_PROGRAM_IDS = {
@@ -39,59 +81,271 @@ AMM_PROGRAM_IDS = {
     "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc": "Orca",
 }
 
-RENT_EXEMPT_MINIMUM = 0.002  # SOL mínimo de renta
+DB_CONFIG = {
+    "host": "localhost",
+    "port": 5432,
+    "database": "memecoins_db",
+    "user": "postgres",
+    "password": "12345"
+}
 
 
-class MetricsCollector:
-    """Recopila métricas de tokens activos cada 10 segundos con asyncio"""
+
+class HybridAsyncRPC:
+    """
+    Cliente RPC híbrido asíncrono:
+    - getSignaturesForAddress, getTransaction → localhost
+    - getTokenLargestAccounts, getAccountInfo, getMultipleAccounts, getTokenAccounts → externos (round-robin)
+    """
     
-    def __init__(self, db_config: Dict, rpc_url: str = "http://127.0.0.1:7211"):
-        self.db_config = db_config
-        self.rpc_url = rpc_url
-        self.rpc = SolanaRPC(rpc_url)  # Cliente síncrono para operaciones simples
-        self.conn = None
-        self.active_tokens = []
+    def __init__(self, local_url: str, external_providers: List[dict]):
+        self.local_url = local_url
+        self.external_providers = external_providers
+        self.request_id = 0
         
-        # Estadísticas
+        self.weighted_providers = []
+        for provider in external_providers:
+            self.weighted_providers.extend([provider] * provider['weight'])
+        
+        self.current_idx = 0
+        
+        self.backoff = {p['name']: 0 for p in external_providers}
+        self.backoff_until = {p['name']: 0 for p in external_providers}
+        
+        self.stats = {
+            'local': {'success': 0, 'failures': 0},
+            **{p['name']: {'success': 0, 'failures': 0, 'rate_limited': 0} for p in external_providers}
+        }
+        
+        self.session = None
+    
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+    
+    def _get_next_external(self) -> dict:
+        """Obtiene el siguiente proveedor externo (weighted round-robin con backoff)"""
+        now = time.time()
+        available = [p for p in self.weighted_providers if self.backoff_until[p['name']] <= now]
+        
+        if not available:
+            min_provider = min(self.external_providers, key=lambda x: self.backoff_until[x['name']])
+            wait_time = self.backoff_until[min_provider['name']] - now
+            if wait_time > 0:
+                logger.warning(f"Todos los RPCs externos en backoff. Esperando {wait_time:.1f}s...")
+                time.sleep(wait_time)
+            return min_provider
+        
+        provider = available[self.current_idx % len(available)]
+        self.current_idx += 1
+        return provider
+    
+    def _apply_backoff(self, provider_name: str):
+        """Aplica exponential backoff a un proveedor"""
+        current = self.backoff[provider_name]
+        if current == 0:
+            self.backoff[provider_name] = 2
+        else:
+            self.backoff[provider_name] = min(current * 2, 60)
+        self.backoff_until[provider_name] = time.time() + self.backoff[provider_name]
+    
+    async def call(self, method: str, params: list = None, timeout: int = 10) -> Optional[dict]:
+        """
+        Enruta la llamada según el método:
+        - getSignaturesForAddress, getTransaction → local
+        - getTokenLargestAccounts, getAccountInfo, getMultipleAccounts, getTokenAccounts → externo
+        """
+        if params is None:
+            params = []
+        
+        self.request_id += 1
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self.request_id,
+            "method": method,
+            "params": params
+        }
+        
+        if method in ["getSignaturesForAddress", "getTransaction", "getHealth", "getSlot"]:
+            return await self._call_local(payload, timeout)
+        else:
+            return await self._call_external(payload, timeout)
+    
+    async def _call_local(self, payload: dict, timeout: int) -> Optional[dict]:
+        """Llamada al nodo local"""
+        try:
+            async with self.session.post(self.local_url, json=payload, timeout=timeout) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    if 'error' not in result:
+                        self.stats['local']['success'] += 1
+                        return result.get('result')
+                self.stats['local']['failures'] += 1
+                return None
+        except Exception as e:
+            logger.debug(f"Error en local RPC: {e}")
+            self.stats['local']['failures'] += 1
+            return None
+    
+    async def _call_external(self, payload: dict, timeout: int) -> Optional[dict]:
+        """Llamada a RPCs externos con round-robin y retry"""
+        tried_providers = []
+        
+        for attempt in range(3):
+            provider = self._get_next_external()
+            
+            if provider['name'] in tried_providers:
+                continue
+            tried_providers.append(provider['name'])
+            
+            result, error = await self._try_external(provider, payload, timeout)
+            
+            if error is None:
+                self.stats[provider['name']]['success'] += 1
+                self.backoff[provider['name']] = 0
+                self.backoff_until[provider['name']] = 0
+                return result
+            elif error == 'rate_limited':
+                self.stats[provider['name']]['rate_limited'] += 1
+                self._apply_backoff(provider['name'])
+                logger.debug(f"{provider['name']} rate limited. Backoff: {self.backoff[provider['name']]}s")
+                continue
+            else:
+                self.stats[provider['name']]['failures'] += 1
+                continue
+        
+        return None
+    
+    async def _try_external(self, provider: dict, payload: dict, timeout: int):
+        """Intenta una llamada a un proveedor externo"""
+        try:
+            async with self.session.post(provider['url'], json=payload, timeout=timeout) as response:
+                if response.status == 429:
+                    return None, 'rate_limited'
+                
+                if response.status == 200:
+                    result = await response.json()
+                    if 'error' in result:
+                        error_msg = str(result['error'].get('message', ''))
+                        if 'could not find' in error_msg.lower() or 'not found' in error_msg.lower():
+                            return None, 'not_found'
+                        elif '429' in error_msg or 'rate limit' in error_msg.lower():
+                            return None, 'rate_limited'
+                        else:
+                            return None, 'error'
+                    return result.get('result'), None
+                
+                return None, 'http_error'
+        except asyncio.TimeoutError:
+            return None, 'timeout'
+        except Exception as e:
+            logger.debug(f"Error en {provider['name']}: {e}")
+            return None, 'error'
+    
+    async def get_holders_count(self, mint_address: str) -> int:
+        """
+        Obtiene el número de holders usando Helius DAS API.
+        Intenta solo con proveedores que tengan has_das=True.
+        """
+        helius_providers = [p for p in self.external_providers if p.get('has_das', False)]
+        
+        if not helius_providers:
+            logger.warning("No hay proveedores con DAS API configurados")
+            return 0
+        
+        provider = helius_providers[0]
+        
+        self.request_id += 1
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self.request_id,
+            "method": "getTokenAccounts",
+            "params": {
+                "mint": mint_address,
+                "limit": 1,
+                "showZeroBalance": False
+            }
+        }
+        
+        try:
+            async with self.session.post(provider['url'], json=payload, timeout=10) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    if 'result' in result and 'total' in result['result']:
+                        return result['result']['total']
+        except Exception as e:
+            logger.debug(f"Error obteniendo holders para {mint_address[:8]}...: {e}")
+        
+        return 0
+    
+    def print_stats(self):
+        """Imprime estadísticas de uso"""
+        logger.info("=" * 70)
+        logger.info("RPC STATISTICS")
+        logger.info("=" * 70)
+        
+        local_total = self.stats['local']['success'] + self.stats['local']['failures']
+        if local_total > 0:
+            success_rate = (self.stats['local']['success'] / local_total) * 100
+            logger.info(f"  {'Local':15} - Success: {success_rate:5.1f}% | Errors: {self.stats['local']['failures']:3d}")
+        
+        for name in [p['name'] for p in self.external_providers]:
+            stats = self.stats[name]
+            total = stats['success'] + stats['failures'] + stats['rate_limited']
+            if total > 0:
+                success_rate = (stats['success'] / total) * 100
+                logger.info(
+                    f"  {name:15} - Success: {success_rate:5.1f}% | "
+                    f"429s: {stats['rate_limited']:3d} | Errors: {stats['failures']:3d}"
+                )
+        logger.info("=" * 70)
+
+
+
+class MetricsCollectorFusion:
+    """
+    Versión fusionada que combina lo mejor de ambas versiones:
+    1. getMultipleAccounts batch para pools (del original)
+    2. Cálculo de volumen vía nodo local (de la nueva)
+    3. Async con semaphore (de la nueva)
+    4. mark_token_dead (del original)
+    5. Enrutamiento híbrido (de la nueva)
+    6. Holders count vía Helius DAS (nuevo)
+    7. Liquidity desde lamports del pool (nuevo)
+    """
+    
+    def __init__(self):
+        self.conn = None
+        self.rpc = None
+        self.active_tokens = []
+        self.semaphore = asyncio.Semaphore(20)  # Máximo 20 tareas concurrentes
+        
         self.metrics_collected = 0
-        self.errors_count = 0
+        self.tokens_not_found = 0
+        self.batch_calls = 0
         self.start_time = datetime.now()
     
     def connect_db(self):
         """Conecta a PostgreSQL"""
-        try:
-            if self.conn:
-                self.conn.close()
-            
-            self.conn = psycopg2.connect(
-                host=self.db_config["host"],
-                port=self.db_config["port"],
-                database=self.db_config["database"],
-                user=self.db_config["user"],
-                password=self.db_config["password"]
-            )
-            logger.info("Conectado a PostgreSQL")
-        except Exception as e:
-            logger.error(f"Error conectando a PostgreSQL: {e}")
-            raise
+        self.conn = psycopg2.connect(**DB_CONFIG)
+        logger.info("✓ Conectado a PostgreSQL")
     
-    def load_active_tokens(self, hours: int = 24):
-        """Carga tokens activos priorizando los que tienen pool cacheado"""
+    def load_active_tokens(self, hours: int = 1):
+        """Carga tokens activos, priorizando los que tienen pool cacheado"""
         cursor = self.conn.cursor()
-        
-        # Primero: tokens con pool ya cacheado (baratos: 1 batch call)
-        # Después: tokens sin pool pero recientes (caros: 3-7 calls cada uno)
         query = """
-            SELECT token_id, mint_address, amm, name, symbol, decimals, total_supply, pool_address
-            FROM tokens 
-            WHERE status = 'active'
-            AND detected_at > NOW() - INTERVAL '%s hours'
-            ORDER BY 
-                CASE WHEN pool_address IS NOT NULL THEN 0 ELSE 1 END,
-                detected_at DESC
-            LIMIT 500
+        SELECT token_id, mint_address, amm, name, symbol, decimals, total_supply, pool_address
+        FROM tokens
+        WHERE detected_at > NOW() - INTERVAL '%s hours'
+        AND status = 'active'
+        ORDER BY 
+            CASE WHEN pool_address IS NOT NULL THEN 0 ELSE 1 END,
+            detected_at DESC
         """
-        
         cursor.execute(query, (hours,))
         tokens = cursor.fetchall()
         
@@ -112,508 +366,454 @@ class MetricsCollector:
         with_pool = sum(1 for t in self.active_tokens if t.get('pool_address'))
         without_pool = len(self.active_tokens) - with_pool
         
-        logger.info(f"✓ Cargados {len(self.active_tokens)} tokens (pool: {with_pool} | sin pool: {without_pool})")
+        logger.info(
+            f"✓ Cargados {len(self.active_tokens)} tokens activos "
+            f"({with_pool} con pool, {without_pool} sin pool)"
+        )
         cursor.close()
-
     
-    async def find_pool_and_price_async(self, rpc: AsyncSolanaRPC, mint_address: str) -> tuple:
+    async def fetch_pools_batch(self, tokens: List[dict]) -> Dict[str, dict]:
         """
-        Encuentra pool address Y calcula precio en una sola operación (versión async)
-        
-        CORRECCIÓN: No busca "result" dos veces, usa directamente lo que retorna rpc.call()
-        
-        Returns:
-            (pool_address, price_in_sol) o (None, None)
+        Fetcha información de múltiples pools usando getMultipleAccounts.
+        OPTIMIZACIÓN CLAVE del original.
         """
-        try:
-            # Paso 1: getTokenLargestAccounts para encontrar el holder más grande
-            result = await rpc.get_token_largest_accounts(mint_address)
+        pool_addresses = list(set(
+            token['pool_address']
+            for token in tokens
+            if token.get('pool_address')
+        ))
+        
+        if not pool_addresses:
+            return {}
+        
+        result = await self.rpc.call('getMultipleAccounts', [
+            pool_addresses,
+            {"encoding": "jsonParsed"}
+        ])
+        
+        if not result:
+            return {}
+        
+        pools_data = {}
+        for i, account_data in enumerate(result.get('value', [])):
+            if account_data is None:
+                continue
             
-            # CORRECCIÓN: result ya ES el contenido de "result", no tiene key "result"
-            if result is None:
-                logger.warning(f"Token {mint_address[:16]}... no encontrado en blockchain (posiblemente cerrado)")
-                return None, None
-            
-            # CORRECCIÓN: Acceso directo a "value"
-            accounts = result.get("value", [])
-            
-            if not accounts:
-                logger.warning(f"Sin holders para {mint_address[:16]}...")
-                return None, None
-            
-            # Paso 2: Verificar las 3 cuentas más grandes para encontrar un pool
-            for i, acc in enumerate(accounts[:3]):
-                account_address = acc.get("address")
-                token_amount_raw = int(acc.get("amount", 0))
-                token_decimals = acc.get("decimals", 9)
-                
-                if not account_address:
-                    continue
-                
-                logger.debug(f"  [{i+1}] Verificando cuenta {account_address[:16]}... con {token_amount_raw} tokens")
-                
-                # Obtener el owner de esta token account
-                acc_result = await rpc.get_account_info(account_address, encoding="jsonParsed")
-                
-                # CORRECCIÓN: acc_result ya ES el contenido, no tiene key "result"
-                if acc_result is None:
-                    continue
-                
-                acc_data = acc_result.get("value")
-                if not acc_data:
-                    continue
-                
-                parsed = acc_data.get("data", {}).get("parsed", {})
-                pool_candidate = parsed.get("info", {}).get("owner")
-                
-                if not pool_candidate:
-                    continue
-                
-                # Paso 3: Verificar que el owner del pool sea un AMM conocido
-                try:
-                    pool_result = await rpc.get_account_info(pool_candidate, encoding="jsonParsed")
-                    
-                    # CORRECCIÓN: pool_result ya ES el contenido
-                    if pool_result is None:
-                        continue
-                    
-                    pool_data = pool_result.get("value")
-                except Exception as e:
-                    logger.error(f"Error en getAccountInfo (pool): {e}")
-                    continue
-                
-                if not pool_data:
-                    continue
-                
-                pool_owner = pool_data.get("owner")
-                
-                # Verificar si es un pool de AMM conocido
-                if pool_owner in AMM_PROGRAM_IDS:
-                    amm_name = AMM_PROGRAM_IDS[pool_owner]
-                    
-                    # Obtener SOL del pool
-                    sol_lamports = pool_data.get("lamports", 0)
-                    sol_balance = sol_lamports / 1_000_000_000
-                    sol_for_price = max(sol_balance - RENT_EXEMPT_MINIMUM, 0)
-                    
-                    # Calcular precio
-                    token_balance = token_amount_raw / (10 ** token_decimals)
-                    
-                    if token_balance > 0 and sol_for_price > 0:
-                        price_in_sol = sol_for_price / token_balance
-                    else:
-                        price_in_sol = 0
-                    
-                    logger.info(
-                        f"✓ {mint_address[:16]}... | Pool: {pool_candidate[:16]}... ({amm_name}) | "
-                        f"SOL: {sol_balance:.6f} | Tokens: {token_balance:,.0f} | "
-                        f"Precio: {price_in_sol:.12f} SOL"
-                    )
-                    
-                    # Guardar pool en BD para no buscarlo de nuevo
-                    self.save_pool_to_db(mint_address, pool_candidate)
-                    
-                    return pool_candidate, price_in_sol
-            
-            # Ninguna de las 3 cuentas más grandes era un pool
-            logger.warning(
-                f"✗ No se encontró pool para {mint_address[:16]}... "
-                f"(las 3 cuentas más grandes no pertenecen a ningún AMM)"
-            )
-            return None, None
-            
-        except Exception as e:
-            logger.error(f"Error en find_pool_and_price_async: {e}")
-            return None, None
+            pool_address = pool_addresses[i]
+            pools_data[pool_address] = {
+                'lamports': account_data.get('lamports', 0),
+                'owner': account_data.get('owner')
+            }
+        
+        self.batch_calls += 1
+        return pools_data
     
-    async def get_price_from_known_pool_async(
-        self, 
-        rpc: AsyncSolanaRPC, 
-        pool_address: str, 
-        mint_address: str
-    ) -> float:
+    async def calculate_volume(self, token: dict) -> Dict[str, float]:
         """
-        Si ya conocemos el pool, solo necesitamos 2 llamadas para el precio (versión async)
+        Calcula volumen usando nodo local (getSignaturesForAddress + getTransaction).
+        FUNCIONALIDAD NUEVA de la versión híbrida.
+        """
+        mint = token['mint_address']
+        now = int(time.time())
         
-        CORRECCIÓN: No busca "result" dos veces
+        signatures_result = await self.rpc.call('getSignaturesForAddress', [
+            mint,
+            {"limit": 100}
+        ])
+        
+        if not signatures_result:
+            return {'volume_10m': 0.0, 'swap_count': 0}
+        
+        volume_10m = 0.0
+        swap_count = 0
+        cutoff_10m = now - 600
+        
+        for sig_info in signatures_result:
+            block_time = sig_info.get('blockTime', 0)
+            if block_time < cutoff_10m:
+                break
+            
+            signature = sig_info['signature']
+            tx_result = await self.rpc.call('getTransaction', [
+                signature,
+                {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}
+            ])
+            
+            if not tx_result or not tx_result.get('meta'):
+                continue
+            
+            meta = tx_result['meta']
+            pre_balances = meta.get('preBalances', [])
+            post_balances = meta.get('postBalances', [])
+            
+            for i, (pre, post) in enumerate(zip(pre_balances, post_balances)):
+                if pre != post:
+                    sol_change = abs(post - pre) / 1_000_000_000
+                    if sol_change > 0.001:  # Mínimo 0.001 SOL
+                        volume_10m += sol_change
+                        swap_count += 1
+                        break
+        
+        return {'volume_10m': volume_10m, 'swap_count': swap_count}
+    
+    async def get_price_and_liquidity(self, token: dict, pools_data: Dict[str, dict]) -> tuple:
         """
-        try:
-            # Obtener balance de SOL del pool
-            pool_result = await rpc.get_account_info(pool_address)
+        Calcula precio Y liquidity desde los datos del pool.
+        Liquidity es NUEVO - antes estaba en 0.
+        """
+        pool_address = token.get('pool_address')
+        if not pool_address or pool_address not in pools_data:
+            return None, 0.0
+        
+        result = await self.rpc.call('getTokenLargestAccounts', [token['mint_address']])
+        if not result:
+            return None, 0.0
+        
+        accounts = result.get('value', [])
+        if not accounts:
+            return None, 0.0
+        
+        largest = accounts[0]
+        token_amount_raw = int(largest['amount'])
+        token_decimals = largest['decimals']
+        token_balance = token_amount_raw / (10 ** token_decimals)
+        
+        sol_balance = pools_data[pool_address]['lamports'] / 1_000_000_000
+        
+        if token_balance <= 0:
+            return None, 0.0
+        
+        price = sol_balance / token_balance
+        
+        liquidity = sol_balance * 2
+        
+        return price, liquidity
+    
+    async def collect_token_metrics(self, token: dict) -> Optional[dict]:
+        """Recopila todas las métricas de un token (async con semaphore)"""
+        async with self.semaphore:
+            try:
+                if token.get('pool_address'):
+                    return token  # Se procesa en batch después
+                
+                pool, price, liquidity, error = await self.find_pool_and_price(token)
+                
+                if error == 'dead':
+                    self.mark_token_dead(token['token_id'], token['mint_address'])
+                    return None
+                
+                if price and price > 0:
+                    volume_data = await self.calculate_volume(token)
+                    
+                    holders = await self.rpc.get_holders_count(token['mint_address'])
+                    
+                    total_supply = token['total_supply'] or 0
+                    decimals = token['decimals'] or 9
+                    supply_normalized = total_supply / (10 ** decimals) if total_supply > 0 else 0
+                    market_cap = price * supply_normalized
+                    
+                    return {
+                        'time': datetime.now(),
+                        'token_id': token['token_id'],
+                        'price': price,
+                        'liquidity': liquidity,
+                        'market_cap': market_cap,
+                        'fdv': market_cap,
+                        'holders_count': holders,
+                        'volume_10m': volume_data['volume_10m'],
+                        'swap_count': volume_data['swap_count'],
+                        'pool_address': pool
+                    }
+                
+                return None
+                
+            except Exception as e:
+                logger.error(f"Error procesando {token['mint_address'][:16]}...: {e}")
+                return None
+    
+    async def find_pool_and_price(self, token: dict) -> tuple:
+        """Encuentra pool para token sin cache (versión async)"""
+        mint_address = token['mint_address']
+        
+        result = await self.rpc.call('getTokenLargestAccounts', [mint_address])
+        if not result:
+            return None, None, 0.0, 'not_found'
+        
+        accounts = result.get('value', [])
+        if not accounts:
+            return None, None, 0.0, 'dead'
+        
+        for largest in accounts[:3]:
+            largest_token_account = largest['address']
+            token_amount_raw = int(largest['amount'])
+            token_decimals = largest['decimals']
             
-            # CORRECCIÓN: pool_result ya ES el contenido
-            if pool_result is None:
-                return 0
+            acc_result = await self.rpc.call('getAccountInfo', [
+                largest_token_account,
+                {"encoding": "jsonParsed"}
+            ])
             
-            pool_data = pool_result.get("value")
+            if not acc_result:
+                continue
+            
+            account_data = acc_result.get('value')
+            if not account_data:
+                continue
+            
+            parsed = account_data.get('data', {}).get('parsed', {})
+            pool_candidate = parsed.get('info', {}).get('owner')
+            
+            if not pool_candidate:
+                continue
+            
+            pool_result = await self.rpc.call('getAccountInfo', [
+                pool_candidate,
+                {"encoding": "jsonParsed"}
+            ])
+            
+            if not pool_result:
+                continue
+            
+            pool_data = pool_result.get('value')
             if not pool_data:
-                return 0
+                continue
             
-            sol_lamports = pool_data.get("lamports", 0)
-            sol_balance = sol_lamports / 1_000_000_000
-            sol_for_price = max(sol_balance - RENT_EXEMPT_MINIMUM, 0)
-            
-            # Obtener balance de tokens en el pool
-            result = await rpc.get_token_largest_accounts(mint_address)
-            
-            # CORRECCIÓN: result ya ES el contenido
-            if result is None:
-                return 0
-            
-            accounts = result.get("value", [])
-            
-            # Buscar la token account que pertenece a este pool
-            for acc in accounts[:5]:
-                acc_result = await rpc.get_account_info(acc["address"], encoding="jsonParsed")
+            pool_owner = pool_data.get('owner')
+            if pool_owner in AMM_PROGRAM_IDS:
+                lamports = pool_data.get('lamports', 0)
+                sol_balance = lamports / 1_000_000_000
+                token_balance = token_amount_raw / (10 ** token_decimals)
                 
-                # CORRECCIÓN: acc_result ya ES el contenido
-                if acc_result is None:
-                    continue
-                
-                acc_data = acc_result.get("value")
-                if not acc_data:
-                    continue
-                
-                parsed = acc_data.get("data", {}).get("parsed", {})
-                owner = parsed.get("info", {}).get("owner")
-                
-                if owner == pool_address:
-                    token_amount = int(acc["amount"])
-                    decimals = acc["decimals"]
-                    token_balance = token_amount / (10 ** decimals)
-                    
-                    if token_balance > 0 and sol_for_price > 0:
-                        return sol_for_price / token_balance
-                    
-                    return 0
-            
-            return 0
-            
-        except Exception as e:
-            logger.error(f"Error obteniendo precio de pool conocido: {e}")
-            return 0
+                if token_balance > 0:
+                    price = sol_balance / token_balance
+                    liquidity = sol_balance * 2
+                    self.cache_pool_address(token['token_id'], pool_candidate)
+                    return pool_candidate, price, liquidity, None
+        
+        return None, None, 0.0, 'no_pool'
     
-    def save_pool_to_db(self, mint_address: str, pool_address: str):
-        """Guarda el pool en la BD para no buscarlo de nuevo"""
+    def cache_pool_address(self, token_id: int, pool_address: str):
+        """Cachea pool_address en BD"""
         try:
             cursor = self.conn.cursor()
             cursor.execute(
-                "UPDATE tokens SET pool_address = %s WHERE mint_address = %s",
-                (pool_address, mint_address)
+                "UPDATE tokens SET pool_address = %s WHERE token_id = %s",
+                (pool_address, token_id)
             )
             self.conn.commit()
             cursor.close()
         except Exception as e:
-            logger.error(f"Error guardando pool en BD: {e}")
+            logger.error(f"Error cacheando pool: {e}")
             self.conn.rollback()
     
-    async def calculate_volume_async(
-        self, 
-        rpc: AsyncSolanaRPC, 
-        pool_address: str, 
-        time_window_seconds: int = 600
-    ) -> Dict[str, float]:
-        """
-        Calcula el volumen de trading en un pool durante una ventana de tiempo
-        
-        Args:
-            rpc: Cliente RPC asíncrono
-            pool_address: Dirección del pool
-            time_window_seconds: Ventana de tiempo en segundos (default: 10 minutos)
-            
-        Returns:
-            {"volume_sol": float, "swap_count": int}
-        """
+    def mark_token_dead(self, token_id: int, mint_address: str):
+        """Marca token como dead (del original)"""
         try:
-            # Obtener firmas de transacciones recientes del pool
-            signatures_result = await rpc.call(
-                "getSignaturesForAddress",
-                [pool_address, {"limit": 100}]  # Últimas 100 transacciones
-            )
-            
-            if signatures_result is None:
-                return {"volume_sol": 0, "swap_count": 0}
-            
-            now = int(time.time())
-            cutoff_time = now - time_window_seconds
-            
-            volume_sol = 0
-            swap_count = 0
-            
-            # Filtrar solo transacciones dentro de la ventana de tiempo
-            for sig_info in signatures_result:
-                blocktime = sig_info.get("blockTime")
-                if blocktime is None or blocktime < cutoff_time:
-                    continue
-                
-                # Obtener detalles de la transacción
-                tx = await rpc.call(
-                    "getTransaction",
-                    [
-                        sig_info["signature"],
-                        {
-                            "encoding": "jsonParsed",
-                            "maxSupportedTransactionVersion": 0
-                        }
-                    ]
-                )
-                
-                if tx is None or "meta" not in tx:
-                    continue
-                
-                # Analizar los cambios de balance SOL (lamports)
-                meta = tx["meta"]
-                pre_balances = meta.get("preBalances", [])
-                post_balances = meta.get("postBalances", [])
-                
-                # Calcular el monto total de SOL que cambió de manos
-                for i in range(min(len(pre_balances), len(post_balances))):
-                    diff = abs(post_balances[i] - pre_balances[i])
-                    if diff > 0:
-                        sol_amount = diff / 1_000_000_000
-                        volume_sol += sol_amount
-                        swap_count += 1
-                        break  # Solo contar una vez por transacción
-            
-            return {
-                "volume_sol": volume_sol,
-                "swap_count": swap_count
-            }
-            
-        except Exception as e:
-            logger.error(f"Error calculando volumen: {e}")
-            return {"volume_sol": 0, "swap_count": 0}
-    
-    async def collect_metrics_for_token_async(
-        self, 
-        rpc: AsyncSolanaRPC, 
-        token: Dict
-    ) -> Optional[Dict]:
-        """
-        Recopila todas las métricas para un token (versión async)
-        """
-        try:
-            mint_address = token["mint_address"]
-            pool_address = token.get("pool_address")
-            
-            # Si no tenemos pool, buscarlo
-            if not pool_address:
-                pool_address, price_in_sol = await self.find_pool_and_price_async(rpc, mint_address)
-                
-                if not pool_address or not price_in_sol or price_in_sol == 0:
-                    # No se pudo obtener precio - puede ser token cerrado
-                    return None
-            else:
-                # Ya tenemos pool, solo obtener precio
-                price_in_sol = await self.get_price_from_known_pool_async(rpc, pool_address, mint_address)
-            
-            # Calcular market cap y FDV
-            total_supply = float(token.get("total_supply", 0))
-            decimals = token.get("decimals", 9)
-            supply = total_supply / (10 ** decimals)
-            market_cap = price_in_sol * supply
-            fdv = market_cap  # Para tokens sin quema, FDV = Market Cap
-            
-            # Calcular volumen en ventanas de tiempo
-            volume_data = await self.calculate_volume_async(rpc, pool_address, time_window_seconds=600)  # 10 minutos
-            volume_10min = volume_data["volume_sol"]
-            
-            return {
-                "time": datetime.now(),
-                "token_id": token["token_id"],
-                "price": price_in_sol,
-                "liquidity": 0,  # TODO: Calcular desde pool reserves
-                "volume_10s": 0,  # Necesita tracking continuo más granular
-                "volume_10m": volume_10min,
-                "volume_1h": 0,  # TODO: Expandir ventana a 1 hora
-                "volume_24h": 0,  # TODO: Expandir ventana a 24 horas
-                "market_cap": market_cap,
-                "fdv": fdv,
-                "holders_count": 0,  # TODO: Implementar count_token_holders
-                "transactions_count": volume_data["swap_count"],
-                "pool_address": pool_address
-            }
-            
-        except Exception as e:
-            logger.error(f"Error recopilando métricas para token {token['token_id']}: {e}")
-            self.errors_count += 1
-            return None
-    
-    def save_metrics(self, metrics_batch: List[Dict]):
-        """Guarda un lote de métricas en la BD"""
-        try:
-            if not metrics_batch:
-                return
-            
             cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE tokens SET status = 'dead' WHERE token_id = %s",
+                (token_id,)
+            )
+            self.conn.commit()
+            cursor.close()
+            logger.info(f"✗ Token {mint_address[:16]}... → dead")
+            self.tokens_not_found += 1
+        except Exception as e:
+            logger.error(f"Error marcando token dead: {e}")
+            self.conn.rollback()
+    
+    async def process_tokens_with_pools(self, tokens: List[dict]) -> List[dict]:
+        """Procesa tokens que ya tienen pool cacheado (BATCH)"""
+        metrics = []
+        
+        pools_data = await self.fetch_pools_batch(tokens)
+        
+        if not pools_data:
+            return metrics
+        
+        for token in tokens:
+            try:
+                price, liquidity = await self.get_price_and_liquidity(token, pools_data)
+                
+                if price and price > 0:
+                    volume_data = await self.calculate_volume(token)
+                    
+                    holders = await self.rpc.get_holders_count(token['mint_address'])
+                    
+                    total_supply = token['total_supply'] or 0
+                    decimals = token['decimals'] or 9
+                    supply_normalized = total_supply / (10 ** decimals) if total_supply > 0 else 0
+                    market_cap = price * supply_normalized
+                    
+                    metrics.append({
+                        'time': datetime.now(),
+                        'token_id': token['token_id'],
+                        'price': price,
+                        'liquidity': liquidity,
+                        'market_cap': market_cap,
+                        'fdv': market_cap,
+                        'holders_count': holders,
+                        'volume_10m': volume_data['volume_10m'],
+                        'swap_count': volume_data['swap_count'],
+                        'pool_address': token['pool_address']
+                    })
+            except Exception as e:
+                logger.error(f"Error procesando token con pool {token['mint_address'][:16]}...: {e}")
+                continue
+        
+        return metrics
+    
+    async def run_collection_cycle(self):
+        """Ejecuta un ciclo de recopilación (async)"""
+        logger.info(f"Iniciando ciclo para {len(self.active_tokens)} tokens...")
+        
+        tokens_with_pool = [t for t in self.active_tokens if t.get('pool_address')]
+        tokens_without_pool = [t for t in self.active_tokens if not t.get('pool_address')][:5]  # Límite de 5
+        
+        all_metrics = []
+        
+        if tokens_with_pool:
+            logger.info(f"Procesando {len(tokens_with_pool)} tokens con pool (batch)...")
+            metrics_batch = await self.process_tokens_with_pools(tokens_with_pool)
+            all_metrics.extend(metrics_batch)
+        
+        if tokens_without_pool:
+            logger.info(f"Descubriendo pools para {len(tokens_without_pool)} tokens...")
+            tasks = [self.collect_token_metrics(token) for token in tokens_without_pool]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # Preparar datos para inserción masiva
+            for result in results:
+                if isinstance(result, dict):
+                    all_metrics.append(result)
+        
+        if all_metrics:
+            self.save_metrics(all_metrics)
+        
+        logger.info(f"✓ Ciclo completado: {len(all_metrics)} métricas recopiladas")
+        return len(all_metrics)
+    
+    def save_metrics(self, metrics_batch: List[dict]):
+        """Guarda métricas en BD"""
+        if not metrics_batch:
+            return
+        
+        try:
+            cursor = self.conn.cursor()
             values = [
                 (
-                    m["time"],
-                    m["token_id"],
-                    m["price"],
-                    m["liquidity"],
-                    m["volume_10s"],
-                    m.get("volume_10m", 0),
-                    m.get("volume_1h", 0),
-                    m.get("volume_24h", 0),
-                    m["market_cap"],
-                    m["fdv"],
-                    m["holders_count"],
-                    m.get("transactions_count", 0),
-                    m["pool_address"]
+                    m['time'],
+                    m['token_id'],
+                    m['price'],
+                    m['liquidity'],
+                    m['market_cap'],
+                    m['fdv'],
+                    m['holders_count'],
+                    m.get('volume_10m', 0.0),
+                    m.get('swap_count', 0),
+                    m['pool_address']
                 )
                 for m in metrics_batch
             ]
             
             query = """
-                INSERT INTO token_metrics (
-                    time, token_id, price, liquidity, 
-                    volume_10s, volume_10m, volume_1h, volume_24h,
-                    market_cap, fdv, holders_count, transactions_count, pool_address
-                )
-                VALUES %s
-                ON CONFLICT (time, token_id) DO UPDATE SET
-                    price = EXCLUDED.price,
-                    liquidity = EXCLUDED.liquidity,
-                    volume_10s = EXCLUDED.volume_10s,
-                    volume_10m = EXCLUDED.volume_10m,
-                    holders_count = EXCLUDED.holders_count
+            INSERT INTO token_metrics
+            (time, token_id, price, liquidity, market_cap, fdv, holders_count, volume_10m, swap_count, pool_address)
+            VALUES %s
+            ON CONFLICT (time, token_id) DO UPDATE SET
+                price = EXCLUDED.price,
+                liquidity = EXCLUDED.liquidity,
+                market_cap = EXCLUDED.market_cap,
+                holders_count = EXCLUDED.holders_count,
+                volume_10m = EXCLUDED.volume_10m,
+                swap_count = EXCLUDED.swap_count,
+                pool_address = EXCLUDED.pool_address
             """
-            
             execute_values(cursor, query, values)
             self.conn.commit()
             cursor.close()
             
             self.metrics_collected += len(metrics_batch)
-            logger.info(f"✓ Guardadas {len(metrics_batch)} métricas")
+            logger.info(f"✓ Guardadas {len(metrics_batch)} métricas en BD")
             
         except Exception as e:
             logger.error(f"Error guardando métricas: {e}")
             self.conn.rollback()
-            self.errors_count += 1
-    
-    async def run_collection_cycle_async(self):
-        """
-        Ejecuta un ciclo de recopilación de métricas usando asyncio para paralelizar
-        """
-        try:
-            logger.info(f"Iniciando ciclo de recopilación para {len(self.active_tokens)} tokens")
-            
-            metrics_batch = []
-            
-            # Usar AsyncSolanaRPC con context manager
-            async with AsyncSolanaRPC(self.rpc_url, max_concurrent=20) as rpc:
-                # Crear tareas para todos los tokens (procesamiento en paralelo)
-                tasks = [
-                    self.collect_metrics_for_token_async(rpc, token)
-                    for token in self.active_tokens
-                ]
-                
-                # Ejecutar todas las tareas en paralelo
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                # Filtrar resultados exitosos
-                for result in results:
-                    if isinstance(result, Exception):
-                        logger.error(f"Excepción en tarea: {result}")
-                        self.errors_count += 1
-                    elif result is not None:
-                        metrics_batch.append(result)
-            
-            # Guardar todas las métricas
-            if metrics_batch:
-                self.save_metrics(metrics_batch)
-            
-            return len(metrics_batch)
-            
-        except Exception as e:
-            logger.error(f"Error en ciclo de recopilación: {e}")
-            return 0
     
     def print_stats(self):
-        """Imprime estadísticas del collector"""
+        """Imprime estadísticas"""
         uptime = datetime.now() - self.start_time
-        logger.info("=" * 60)
-        logger.info("ESTADÍSTICAS DEL METRICS COLLECTOR")
-        logger.info("=" * 60)
+        logger.info("=" * 70)
+        logger.info("METRICS COLLECTOR FUSION - ESTADÍSTICAS")
+        logger.info("=" * 70)
         logger.info(f"Tiempo activo: {uptime}")
-        logger.info(f"Tokens activos monitoreados: {len(self.active_tokens)}")
+        logger.info(f"Tokens activos: {len(self.active_tokens)}")
         logger.info(f"Métricas recopiladas: {self.metrics_collected}")
-        logger.info(f"Errores: {self.errors_count}")
+        logger.info(f"Batch calls (getMultipleAccounts): {self.batch_calls}")
+        logger.info(f"Tokens marcados dead: {self.tokens_not_found}")
         
-        if self.metrics_collected > 0:
-            success_rate = (1 - self.errors_count / max(self.metrics_collected, 1)) * 100
-            logger.info(f"Tasa de éxito: {success_rate:.2f}%")
-        
-        logger.info("=" * 60)
+        if self.rpc:
+            self.rpc.print_stats()
     
-    def run(self, reload_interval_minutes: int = 10):
-        """
-        Bucle principal del collector
-        
-        Args:
-            reload_interval_minutes: Cada cuántos minutos recargar la lista de tokens activos
-        """
-        logger.info("Iniciando MetricsCollector con asyncio...")
+    async def run(self, reload_interval_minutes: int = 5):
+        """Bucle principal (async)"""
+        logger.info("=" * 70)
+        logger.info("METRICS COLLECTOR FUSION - INICIANDO")
+        logger.info("=" * 70)
+        logger.info("Características:")
+        logger.info("  ✓ getMultipleAccounts batch (pools)")
+        logger.info("  ✓ Cálculo de volumen vía nodo local")
+        logger.info("  ✓ Holders count vía Helius DAS API")
+        logger.info("  ✓ Liquidity desde lamports del pool")
+        logger.info("  ✓ Async con semaphore (20 tareas paralelas)")
+        logger.info("  ✓ Enrutamiento híbrido (local + externos)")
+        logger.info("  ✓ Mark dead tokens automático")
+        logger.info("=" * 70)
+        logger.info("Proveedores RPC:")
+        logger.info(f"  Local: {LOCAL_RPC_URL}")
+        for provider in EXTERNAL_RPC_PROVIDERS:
+            das = " [DAS]" if provider.get('has_das') else ""
+            logger.info(f"  {provider['name']:15} (weight: {provider['weight']}, {provider['rate_limit']} req/s){das}")
+        logger.info("=" * 70)
         
         self.connect_db()
-        self.load_active_tokens(hours=1)  # Solo última hora
+        self.load_active_tokens(hours=1)
         
-        last_reload = datetime.now()
-        cycle_count = 0
-        
-        try:
-            while True:
-                cycle_start = time.time()
-                
-                # Recargar lista de tokens cada N minutos
-                if datetime.now() - last_reload > timedelta(minutes=reload_interval_minutes):
-                    logger.info("Recargando lista de tokens activos...")
-                    self.load_active_tokens(hours=1)
-                    last_reload = datetime.now()
-                
-                # Ejecutar ciclo de recopilación (ahora con asyncio)
-                metrics_count = asyncio.run(self.run_collection_cycle_async())
-                cycle_count += 1
-                
-                # Imprimir stats cada 10 ciclos
-                if cycle_count % 10 == 0:
-                    self.print_stats()
-                
-                # Calcular tiempo de espera
-                elapsed = time.time() - cycle_start
-                wait_time = max(0, 10 - elapsed)  # 10 segundos entre ciclos
-                
-                logger.info(f"Ciclo completado en {elapsed:.2f}s. Esperando {wait_time:.2f}s...")
-                time.sleep(wait_time)
-                
-        except KeyboardInterrupt:
-            logger.info("Deteniendo MetricsCollector...")
-            self.print_stats()
-        except Exception as e:
-            logger.error(f"Error fatal en MetricsCollector: {e}")
-            raise
-        finally:
-            if self.conn:
-                self.conn.close()
-                logger.info("Conexión a BD cerrada")
+        async with HybridAsyncRPC(LOCAL_RPC_URL, EXTERNAL_RPC_PROVIDERS) as rpc:
+            self.rpc = rpc
+            
+            last_reload = datetime.now()
+            cycle_count = 0
+            
+            try:
+                while True:
+                    cycle_start = time.time()
+                    
+                    if datetime.now() - last_reload > timedelta(minutes=reload_interval_minutes):
+                        logger.info("Recargando lista de tokens activos...")
+                        self.load_active_tokens(hours=1)
+                        last_reload = datetime.now()
+                    
+                    await self.run_collection_cycle()
+                    cycle_count += 1
+                    
+                    if cycle_count % 5 == 0:
+                        self.print_stats()
+                    
+                    elapsed = time.time() - cycle_start
+                    wait_time = max(0, 10 - elapsed)
+                    logger.info(f"Ciclo {cycle_count} completado en {elapsed:.1f}s. Esperando {wait_time:.1f}s...")
+                    await asyncio.sleep(wait_time)
+                    
+            except KeyboardInterrupt:
+                logger.info("\nDeteniendo...")
+                self.print_stats()
+            finally:
+                if self.conn:
+                    self.conn.close()
+                    logger.info("Conexión DB cerrada")
+
 
 
 if __name__ == "__main__":
-    # Configuración de la base de datos
-    DB_CONFIG = {
-        "host": "localhost",
-        "port": 5432,
-        "database": "memecoins_db",
-        "user": "postgres",
-        "password": "12345"
-    }
-    
-    # Configuración del RPC
-    RPC_URL = "http://127.0.0.1:7211"
-    
-    # Crear y ejecutar collector
-    collector = MetricsCollector(DB_CONFIG, RPC_URL)
-    collector.run(reload_interval_minutes=5)
+    collector = MetricsCollectorFusion()
+    asyncio.run(collector.run(reload_interval_minutes=5))
