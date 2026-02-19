@@ -16,15 +16,17 @@ import logging
 from typing import List, Dict, Optional, Any
 from collections import defaultdict
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/home/rebelforce/scripts/memecoindetecting/metrics_collector.log'),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    fh = logging.FileHandler('/home/rebelforce/scripts/memecoindetecting/metrics_collector.log')
+    fh.setFormatter(formatter)
+    sh = logging.StreamHandler()
+    sh.setFormatter(formatter)
+    logger.addHandler(fh)
+    logger.addHandler(sh)
+    logger.propagate = False
 
 # ============================================================
 # CONFIGURACIÓN DE PROVEEDORES RPC
