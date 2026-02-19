@@ -118,6 +118,17 @@ AMMS = {
     }
 }
 
+# Tokens conocidos - NO son memecoins, aparecen como par en pools
+KNOWN_TOKEN_BLACKLIST = {
+    "So11111111111111111111111111111111111111112",    # WSOL
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", # USDC
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT
+    "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",  # RAY
+    "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",   # mSOL
+    "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj",  # stSOL
+    "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn",  # jitoSOL
+}
+
 # Configuración de logging
 logging.basicConfig(
     level=logging.INFO,
@@ -306,6 +317,14 @@ def get_token_metadata(mint_address):
 
     return metadata
 
+def get_token_supply(mint_address):
+    """Obtiene el supply total REAL de un token"""
+    result = rpc_call("getTokenSupply", [mint_address])
+    if "error" in result or "result" not in result:
+        return None
+    value = result.get("result", {}).get("value", {})
+    return value.get("amount")  # String con supply real
+
 # ========================================
 # PROCESAMIENTO DE TRANSACCIONES
 # ========================================
@@ -331,6 +350,10 @@ def extract_token_info(tx_result, amm_name, signature):
         if not mint or mint in seen_mints:
             continue
 
+         # >>> FIX: Filtrar tokens conocidos <<<
+        if mint in KNOWN_TOKEN_BLACKLIST:
+            continue
+
         seen_mints.add(mint)
 
         token_amount = balance.get("uiTokenAmount", {})
@@ -339,7 +362,7 @@ def extract_token_info(tx_result, amm_name, signature):
             "mint_address": mint,
             "name": None,  # Se obtiene después con getAccountInfo
             "symbol": None,
-            "total_supply": token_amount.get("amount"),
+            "total_supply": get_token_supply(mint) or token_amount.get("amount"),
             "decimals": token_amount.get("decimals"),
             "uri": None,
             "image_url": None,
