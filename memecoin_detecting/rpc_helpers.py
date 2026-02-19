@@ -241,121 +241,193 @@ class AsyncSolanaRPC:
 
 def parse_swap_transaction(tx: Dict) -> Optional[Dict]:
     """
-    Parsea una transacción de swap y extrae información relevante
-    
-    Returns:
-        {
-            "signature": str,
-            "blocktime": int,
-            "wallet": str,
-            "token_in": str,
-            "token_out": str,
-            "amount_in": float,
-            "amount_out": float,
-            "type": "buy" | "sell",
-            "program_id": str,
-            "success": bool
-        }
+    Parsea una transacción de swap. Soporta:
+    1. Token-to-Token swaps (Orca, Raydium, etc.)
+    2. SOL-to-Token swaps (Pump.fun, PumpSwap, etc.)
     """
     try:
         if not tx or "meta" not in tx:
             return None
-        
+
         meta = tx["meta"]
-        
-        # Analizar token balances pre y post
-        pre_balances = meta.get("preTokenBalances", [])
-        post_balances = meta.get("postTokenBalances", [])
-        
-        if not pre_balances or not post_balances:
+        if meta.get("err"):
             return None
-        
-        # Construir mapa de cambios de balance por token
-        changes = {}
-        for pre in pre_balances:
-            mint = pre.get("mint")
-            account = pre.get("accountIndex")
-            amount = int(pre.get("uiTokenAmount", {}).get("amount", 0))
-            decimals = pre.get("uiTokenAmount", {}).get("decimals", 9)
-            changes[mint] = {
-                "pre": amount,
-                "post": amount,
-                "decimals": decimals,
-                "account": account
+
+        pre_token = meta.get("preTokenBalances", [])
+        post_token = meta.get("postTokenBalances", [])
+
+        if not pre_token and not post_token:
+            return None
+
+        WSOL = "So11111111111111111111111111111111111111112"
+
+        # === Track per (accountIndex, mint) para no mezclar cuentas del mismo token ===
+        account_changes = {}
+        for b in pre_token:
+            key = (b["accountIndex"], b["mint"])
+            account_changes[key] = {
+                "mint": b["mint"],
+                "pre": int(b["uiTokenAmount"]["amount"]),
+                "post": 0,
+                "decimals": b["uiTokenAmount"].get("decimals", 9),
             }
-        
-        for post in post_balances:
-            mint = post.get("mint")
-            account = post.get("accountIndex")
-            amount = int(post.get("uiTokenAmount", {}).get("amount", 0))
-            decimals = post.get("uiTokenAmount", {}).get("decimals", 9)
-            
-            if mint in changes:
-                changes[mint]["post"] = amount
+
+        for b in post_token:
+            key = (b["accountIndex"], b["mint"])
+            if key in account_changes:
+                account_changes[key]["post"] = int(b["uiTokenAmount"]["amount"])
             else:
-                changes[mint] = {
+                account_changes[key] = {
+                    "mint": b["mint"],
                     "pre": 0,
-                    "post": amount,
-                    "decimals": decimals,
-                    "account": account
+                    "post": int(b["uiTokenAmount"]["amount"]),
+                    "decimals": b["uiTokenAmount"].get("decimals", 9),
                 }
-        
-        # Identificar token in/out (el que sube es "in", el que baja es "out")
-        token_in_mint = None
-        token_out_mint = None
-        token_in_diff = 0
-        token_out_diff = 0
-        token_in_decimals = 9
-        token_out_decimals = 9
-        
-        for mint, data in changes.items():
+
+        # Separar cuentas que aumentaron vs disminuyeron
+        token_increases = []
+        token_decreases = []
+
+        for key, data in account_changes.items():
             diff = data["post"] - data["pre"]
             if diff > 0:
-                token_in_mint = mint
-                token_in_diff = diff
-                token_in_decimals = data["decimals"]
+                token_increases.append((data["mint"], diff, data["decimals"]))
             elif diff < 0:
+                token_decreases.append((data["mint"], abs(diff), data["decimals"]))
+
+        # SOL nativo change en signer (account[0])
+        pre_sol = meta.get("preBalances", [])
+        post_sol = meta.get("postBalances", [])
+        sol_change_lamports = 0
+        if pre_sol and post_sol:
+            sol_change_lamports = post_sol[0] - pre_sol[0]
+
+        # === Determinar swap ===
+        token_in_mint = None
+        token_out_mint = None
+        amount_in = 0.0
+        amount_out = 0.0
+
+        if token_increases and token_decreases:
+            inc_mints = set(m for m, _, _ in token_increases)
+            dec_mints = set(m for m, _, _ in token_decreases)
+            diff_inc = inc_mints - dec_mints
+            diff_dec = dec_mints - inc_mints
+
+            if diff_inc and diff_dec:
+                # Caso 1: Dos tokens diferentes → swap estándar (Raydium, Orca, etc.)
+                for mint, amt, dec in token_increases:
+                    if mint in diff_inc:
+                        token_in_mint = mint
+                        amount_in = amt / (10 ** dec)
+                        break
+                for mint, amt, dec in token_decreases:
+                    if mint in diff_dec:
+                        token_out_mint = mint
+                        amount_out = amt / (10 ** dec)
+                        break
+
+            elif abs(sol_change_lamports) > 1_000_000:
+                # Caso 2: Mismo token se mueve entre cuentas + SOL cambia → Pump.fun
+                involved = list(inc_mints | dec_mints)
+                if involved:
+                    token_mint = involved[0]
+                    token_decimals = 9
+                    token_amount = 0
+                    for mint, amt, dec in token_decreases:
+                        if mint == token_mint:
+                            token_amount = amt / (10 ** dec)
+                            token_decimals = dec
+                            break
+
+                    sol_amount = abs(sol_change_lamports) / 1_000_000_000
+
+                    if sol_change_lamports > 0:
+                        # SELL: wallet recibió SOL, dio tokens
+                        token_in_mint = WSOL
+                        token_out_mint = token_mint
+                        amount_in = sol_amount
+                        amount_out = token_amount
+                    else:
+                        # BUY: wallet gastó SOL, recibió tokens
+                        token_in_mint = token_mint
+                        token_out_mint = WSOL
+                        amount_in = token_amount
+                        amount_out = sol_amount
+
+        elif abs(sol_change_lamports) > 1_000_000:
+            # Caso 3: Solo 1 lado tiene token changes + SOL cambió
+            sol_amount = abs(sol_change_lamports) / 1_000_000_000
+
+            if token_increases and not token_decreases:
+                # Tokens aparecieron + SOL disminuyó → BUY
+                mint, amt, dec = token_increases[0]
+                token_in_mint = mint
+                token_out_mint = WSOL
+                amount_in = amt / (10 ** dec)
+                amount_out = sol_amount
+            elif token_decreases and not token_increases:
+                # Tokens desaparecieron + SOL aumentó → SELL
+                mint, amt, dec = token_decreases[0]
+                token_in_mint = WSOL
                 token_out_mint = mint
-                token_out_diff = abs(diff)
-                token_out_decimals = data["decimals"]
-        
+                amount_in = sol_amount
+                amount_out = amt / (10 ** dec)
+
         if not token_in_mint or not token_out_mint:
             return None
-        
+
         # Extraer wallet (primer signer)
         wallet = None
         if "transaction" in tx and "message" in tx["transaction"]:
             account_keys = tx["transaction"]["message"].get("accountKeys", [])
             if account_keys:
                 wallet = account_keys[0] if isinstance(account_keys[0], str) else account_keys[0].get("pubkey")
-        
-        # Extraer información básica
+
         signature = tx.get("transaction", {}).get("signatures", [None])[0]
         blocktime = tx.get("blockTime")
-        
-        # Determinar programa usado
-        instructions = tx.get("transaction", {}).get("message", {}).get("instructions", [])
+
+        # Program ID (saltar system/compute/token programs)
+        SKIP_PROGRAMS = {
+            "11111111111111111111111111111111",
+            "ComputeBudget111111111111111111111111111111",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+        }
         program_id = None
-        if instructions:
-            program_id = instructions[0].get("programId", {}).get("pubkey") if isinstance(instructions[0].get("programId"), dict) else instructions[0].get("programId")
-        
+        for ix in tx.get("transaction", {}).get("message", {}).get("instructions", []):
+            pid = ix.get("programId")
+            if isinstance(pid, dict):
+                pid = pid.get("pubkey")
+            if pid and pid not in SKIP_PROGRAMS:
+                program_id = pid
+                break
+
+        # Tipo desde perspectiva del wallet
+        if token_in_mint == WSOL:
+            tx_type = "sell"
+        elif token_out_mint == WSOL:
+            tx_type = "buy"
+        else:
+            tx_type = "buy"
+
         return {
             "signature": signature,
             "blocktime": blocktime,
             "wallet": wallet,
             "token_in": token_in_mint,
             "token_out": token_out_mint,
-            "amount_in": token_in_diff / (10 ** token_in_decimals),
-            "amount_out": token_out_diff / (10 ** token_out_decimals),
-            "type": "buy" if token_out_diff > 0 else "sell",
+            "amount_in": amount_in,
+            "amount_out": amount_out,
+            "type": tx_type,
             "program_id": program_id,
             "success": True
         }
-        
+
     except Exception as e:
         logger.error(f"Error parseando swap transaction: {e}")
         return None
-
 
 def batch_process_transactions(transactions: List[Dict]) -> List[Dict]:
     """
