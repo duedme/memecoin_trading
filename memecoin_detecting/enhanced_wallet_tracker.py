@@ -228,7 +228,7 @@ class EnhancedWalletTracker:
                 """, (
                     mint_address,
                     "auto-discovered",
-                    datetime.fromtimestamp(tx.get('block_time', time.time())),
+                    datetime.fromtimestamp(tx.get('blocktime', time.time())),
                     datetime.now(),
                     tx.get('signature', ''),
                     'active',
@@ -381,7 +381,7 @@ class EnhancedWalletTracker:
                 if not memecoin_mint:
                     continue
                 
-                time_window = tx['block_time'] // 300
+                time_window = tx['blocktime'] // 300
                 key = (tx['wallet'], memecoin_mint, tx['type'], time_window)
                 groups[key].append(tx)
             
@@ -459,7 +459,7 @@ class EnhancedWalletTracker:
                 token_amount,
                 sol_amount,
                 price,
-                datetime.fromtimestamp(tx['block_time']),
+                datetime.fromtimestamp(tx['blocktime']),
                 0,
                 tx.get('is_partial', False),
                 tx.get('order_id')
