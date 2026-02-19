@@ -333,8 +333,15 @@ class EnhancedWalletTracker:
             
             logger.info(f"📡 Escaneando {len(new_signatures)} transacciones de {wallet_address[:8]}...")
             
-            # Parsear transacciones
-            transactions = batch_process_transactions(self.rpc, new_signatures, max_workers=3)
+            # Descargar transacciones completas
+            full_transactions = []
+            for sig in new_signatures:
+                tx = self.rpc.get_transaction(sig)
+                if tx:
+                    full_transactions.append(tx)
+            
+            # Parsear swaps
+            transactions = batch_process_transactions(full_transactions)
             
             # Filtrar solo swaps de memecoins
             memecoin_txs = []
