@@ -576,7 +576,7 @@ class EnhancedWalletTracker:
         """Rastrea un lote de wallets (TODAS sus transacciones)"""
         try:
             for wallet in wallet_addresses:
-                transactions = self.scan_wallet_all_transactions(wallet, limit=50)
+                transactions = self.scan_wallet_all_transactions(wallet, limit=300)
                 if not transactions:
                     continue
                 transactions = self.detect_partial_fills(transactions)
