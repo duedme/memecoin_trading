@@ -57,8 +57,8 @@ class EnhancedWalletTracker:
 
         # NUEVO: Control de descubrimiento
         self.last_discovery_time = None
-        self.discovery_interval_minutes = 5  # Descubrir wallets cada 5 min
-        self.max_discovered_wallets = 100  # Máximo wallets auto-descubiertos activos
+        self.discovery_interval_minutes = 3  # Descubrir wallets cada 5 min
+        self.max_discovered_wallets = 1000  # Máximo wallets auto-descubiertos activos
         self.min_trades_to_track = 2  # Mínimo trades para considerar un wallet interesante
 
         # Program IDs de AMMs conocidos (para detectar swaps)
@@ -179,7 +179,7 @@ class EnhancedWalletTracker:
                 WHERE detected_at >= NOW() - INTERVAL '2 hours'
                   AND status = 'active'
                 ORDER BY detected_at DESC
-                LIMIT 40
+                LIMIT 80
             """)
             recent_tokens = cursor.fetchall()
 
@@ -201,7 +201,7 @@ class EnhancedWalletTracker:
                     # Obtener firmas recientes del token
                     signatures_data = self.rpc.get_signatures_for_address(
                         mint_address,
-                        limit=20
+                        limit=50
                     )
 
                     if not signatures_data:
