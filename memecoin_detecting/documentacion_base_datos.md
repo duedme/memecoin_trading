@@ -264,9 +264,7 @@ sudo -u postgres createdb memecoinsdb
 sudo -u postgres psql memecoinsdb -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
 
 # 2. Ejecutar schemas
-sudo -u postgres psql memecoinsdb -f setup_database.sql
-sudo -u postgres psql memecoinsdb -f schema-fase2.sql
-sudo -u postgres psql memecoinsdb -f update_schema_retention.sql
+sudo -u postgres psql memecoinsdb -f memecoinsdb-complete-schema.sql
 
 # 3. Verificar
 sudo -u postgres psql memecoinsdb -c "\dt+"
