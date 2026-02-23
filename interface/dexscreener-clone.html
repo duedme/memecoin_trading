@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memecoin Screener</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Top Bar -->
+    <div class="topbar">
+        <div class="logo">🦎 <span>Memecoin</span>Screener</div>
+        <button class="filter-btn active" data-sort="volume">🔥 Volume</button>
+        <button class="filter-btn" data-sort="mcap">💰 MCap</button>
+        <button class="filter-btn" data-sort="change_24h">📈 Gainers</button>
+        <button class="filter-btn" data-sort="txns">⚡ Txns</button>
+        <button class="filter-btn" data-sort="age">🆕 Newest</button>
+        <input type="text" class="search-box" id="searchBox" placeholder="🔍 Buscar token o pegar dirección...">
+        <div class="stats-bar" id="statsBar">
+            <span class="stat-item" id="statTokens">— tokens</span>
+            <span class="stat-item" id="statWallets">— wallets</span>
+            <span class="stat-item" id="statTxns">— txns/24h</span>
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-container">
+        <table id="tokenTable">
+            <thead>
+                <tr>
+                    <th class="th-token">TOKEN</th>
+                    <th>PRICE</th>
+                    <th>AGE</th>
+                    <th>TXNS</th>
+                    <th>VOLUME</th>
+                    <th>MAKERS</th>
+                    <th>5M</th>
+                    <th>1H</th>
+                    <th>6H</th>
+                    <th>24H</th>
+                    <th>LIQUIDITY</th>
+                    <th>MCAP</th>
+                </tr>
+            </thead>
+            <tbody id="tokenBody">
+                <tr>
+                    <td colspan="12" style="text-align:center; padding:40px; color:#5c5e64;">
+                        ⏳ Cargando datos desde la base de datos...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+        <span id="connectionStatus"><span class="status-dot"></span> Conectando...</span>
+        <span id="lastUpdate">Última actualización: —</span>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
