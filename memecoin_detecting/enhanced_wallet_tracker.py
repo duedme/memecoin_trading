@@ -506,71 +506,108 @@ class EnhancedWalletTracker:
             return transactions
 
     def process_transaction(self, tx: Dict):
-        """Procesa transacción con auto-descubrimiento de tokens"""
+        """
+        Procesa una transacción de swap.
+        Ahora confía en tx['type'] de parse_swap (ya corregido).
+        """
         try:
-            wallet_address = tx['wallet']
+            signature = tx['signature']
 
-            memecoin_mint = None
-            sol_amount = 0
-            token_amount = 0
-            tx_type = tx['type']
-
-            sol_addresses = {
-                "So11111111111111111111111111111111111111112",
-                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-            }
-
-            if tx['token_out'] not in sol_addresses:
-                memecoin_mint = tx['token_out']
-                token_amount = tx['amount_out']
-                sol_amount = tx['amount_in']
-                tx_type = 'buy'
-            elif tx['token_in'] not in sol_addresses:
-                memecoin_mint = tx['token_in']
-                token_amount = tx['amount_in']
-                sol_amount = tx['amount_out']
-                tx_type = 'sell'
-
-            if not memecoin_mint:
+            # Skip duplicados
+            if signature in self.processed_signatures:
                 return
 
+            # Skip si no tiene type válido
+            tx_type = tx.get('type')
+            if not tx_type or tx_type not in ['buy', 'sell']:
+                return
+
+            wallet = tx['wallet']
+            token_in = tx.get('token_in')
+            token_out = tx.get('token_out')
+            amount_in = tx.get('amount_in', 0)
+            amount_out = tx.get('amount_out', 0)
+
+            # Determinar memecoin_mint según tx_type
+            sol_addresses = {
+                'So11111111111111111111111111111111111111112',  # WSOL
+                'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',  # USDC
+            }
+
+            if tx_type == 'buy':
+                # BUY: wallet recibió tokens (token_in), dió SOL (token_out)
+                memecoin_mint = token_in
+                token_amount = amount_in
+                sol_amount = amount_out
+            else:  # sell
+                # SELL: wallet recibió SOL (token_in), dió tokens (token_out)
+                memecoin_mint = token_out
+                token_amount = amount_out
+                sol_amount = amount_in
+
+            # Validaciones
+            if memecoin_mint in sol_addresses:
+                return
+
+            if token_amount <= 0:
+                return
+
+            if tx_type == 'buy' and sol_amount <= 0:
+                return
+
+            # Calcular precio
+            if token_amount > 0:
+                price = sol_amount / token_amount
+            else:
+                price = 0.0
+
+            # Obtener o crear token
             token_id = self.get_or_create_token(memecoin_mint, tx)
             if not token_id:
                 return
 
-            price = sol_amount / token_amount if token_amount > 0 else 0
+            block_time = tx.get('block_time', 0)
+            if block_time > 0:
+                transaction_time = datetime.fromtimestamp(block_time)
+            else:
+                transaction_time = datetime.now()
 
+            # Llamar función SQL
             cursor = self.conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT process_transaction(
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s
                 )
-            """, (
-                wallet_address,
-                memecoin_mint,
-                tx['signature'],
-                tx_type,
-                token_amount,
-                sol_amount,
-                price,
-                datetime.fromtimestamp(tx['blocktime']),
-                0,
-                tx.get('is_partial', False),
-                tx.get('order_id')
-            ))
+                """,
+                (
+                    wallet,
+                    memecoin_mint,
+                    signature,
+                    tx_type,
+                    token_amount,
+                    sol_amount,
+                    price,
+                    transaction_time
+                )
+            )
             self.conn.commit()
             cursor.close()
+
+            self.processed_signatures.add(signature)
             self.transactions_processed += 1
 
-            if wallet_address not in self.discovered_wallets:
-                self.discovered_wallets.add(wallet_address)
-                self.wallets_discovered += 1
-                logger.info(f"🆕 Wallet descubierto: {wallet_address[:16]}...")
+            logger.info(
+                f"{tx_type.upper()}: {wallet[:12]}... | "
+                f"{token_amount:.2f} tokens @ {price:.8f} SOL | "
+                f"Total: {sol_amount:.4f} SOL"
+            )
 
         except Exception as e:
             logger.error(f"Error procesando transacción: {e}")
             self.conn.rollback()
             self.errors_count += 1
+
 
     def track_wallet_batch(self, wallet_addresses: List[str]):
         """Rastrea un lote de wallets (TODAS sus transacciones)"""

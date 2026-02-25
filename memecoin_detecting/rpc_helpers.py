@@ -342,18 +342,16 @@ def parse_swap_transaction(tx: Dict) -> Optional[Dict]:
 
                     sol_amount = abs(sol_change_lamports) / 1_000_000_000
 
-                    if sol_change_lamports > 0:
-                        # SELL: wallet recibió SOL, dio tokens
-                        token_in_mint = WSOL
-                        token_out_mint = token_mint
-                        amount_in = sol_amount
-                        amount_out = token_amount
-                    else:
-                        # BUY: wallet gastó SOL, recibió tokens
-                        token_in_mint = token_mint
-                        token_out_mint = WSOL
-                        amount_in = token_amount
-                        amount_out = sol_amount
+                    if sol_change_lamports < 0:  # BUY: wallet gastó SOL, recibió tokens
+                        token_in_mint = token_mint    # wallet RECIBIÓ tokens
+                        token_out_mint = WSOL         # wallet DIÓ SOL
+                        amount_in = token_amount      # cantidad recibida
+                        amount_out = sol_amount       # cantidad dada
+                    else:  # SELL: wallet recibió SOL, dio tokens
+                        token_in_mint = WSOL          # wallet RECIBIÓ SOL
+                        token_out_mint = token_mint   # wallet DIÓ tokens
+                        amount_in = sol_amount        # cantidad recibida
+                        amount_out = token_amount     # cantidad dada
 
         elif abs(sol_change_lamports) > 1_000_000:
             # Caso 3: Solo 1 lado tiene token changes + SOL cambió
@@ -404,13 +402,13 @@ def parse_swap_transaction(tx: Dict) -> Optional[Dict]:
                 program_id = pid
                 break
 
-        # Tipo desde perspectiva del wallet
+        # Determinar tipo desde perspectiva del wallet
         if token_in_mint == WSOL:
-            tx_type = "sell"
+            tx_type = 'sell'
         elif token_out_mint == WSOL:
-            tx_type = "buy"
+            tx_type = 'buy'
         else:
-            tx_type = "buy"
+            tx_type = 'token_swap'  # Ni token_in ni token_out es WSOL
 
         return {
             "signature": signature,
