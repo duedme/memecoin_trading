@@ -381,11 +381,12 @@ def _format_age(dt):
 
 
 if __name__ == '__main__':
-    print("\n🚀 API Server iniciando en http://localhost:5000")
+    port = 8200
+    print(f"\n🚀 API Server iniciando en http://localhost:{port}")
     print("📡 Endpoints:")
     print("   GET /api/top-traders      → Top traders por P&L")
     print("   GET /api/trader/<wallet>  → Detalle de un trader")
     print("   GET /api/tokens           → Lista de tokens")
     print("   GET /api/token/<mint>     → Detalle de un token")
     print("   GET /api/stats            → Estadísticas generales\n")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=True)

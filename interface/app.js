@@ -3,7 +3,7 @@
 // Top Traders es la vista principal por defecto
 // ══════════════════════════════════════════════════
 
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE = 'http://localhost:8200/api';
 const REFRESH_INTERVAL = 15000;
 
 let currentView = 'traders';  // ← TRADERS ES EL DEFAULT
