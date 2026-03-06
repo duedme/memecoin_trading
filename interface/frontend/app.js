@@ -3,10 +3,7 @@
 // Top Traders es la vista principal por defecto
 // ══════════════════════════════════════════════════
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
-
-const API_BASE = `${BACKEND_URL}/api`;
-const REFRESH_INTERVAL = 15000;
+const API_BASE = '/api';
 
 let currentView = 'traders';  // ← TRADERS ES EL DEFAULT
 let currentSort = 'pnl';
