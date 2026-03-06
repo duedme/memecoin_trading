@@ -33,7 +33,7 @@ jobs:
           VPS_IP: ${{ secrets.VPS_IP }}
           VPS_USERNAME: ${{ vars.VPS_USERNAME }}
         run: |
-          scp -pr * $VPS_USERNAME@$VPS_IP:/var/www/memecoins/
+          scp -pr * $VPS_USERNAME@$VPS_IP:/var/www/memecoin-screener/
 
       - name: SCP to Node
         working-directory: interface/frontend
