@@ -1,13 +1,14 @@
 // ══════════════════════════════════════════════════
 // app.js — Frontend con vista Top Traders + Tokens
-// Top Traders es la vista principal por defecto
+// v2.1: Filtro de tiempo, tokens con mint abreviada, win_rate fix
 // ══════════════════════════════════════════════════
 
 const API_BASE = '/api';
 
-let currentView = 'traders';  // ← TRADERS ES EL DEFAULT
+let currentView = 'traders';
 let currentSort = 'pnl';
 let currentOrder = 'desc';
+let currentTimeRange = 'all';   // ← NUEVO: filtro de tiempo
 let searchTerm = '';
 let allData = [];
 
@@ -26,6 +27,15 @@ const VIEW_CONFIG = {
             { label: '🔄 Trades', sort: 'trades' },
             { label: '💎 Invested', sort: 'invested' },
             { label: '🏆 Best Trade', sort: 'best_trade' },
+        ],
+        // NUEVO: Filtros de tiempo
+        timeFilters: [
+            { label: '1H', value: '1h' },
+            { label: '6H', value: '6h' },
+            { label: '24H', value: '24h' },
+            { label: '7D', value: '7d' },
+            { label: '30D', value: '30d' },
+            { label: 'ALL', value: 'all' },
         ],
         defaultSort: 'pnl',
         headers: `
@@ -52,6 +62,7 @@ const VIEW_CONFIG = {
             { label: '⚡ Txns', sort: 'txns' },
             { label: '🆕 Newest', sort: 'age' },
         ],
+        timeFilters: [],
         defaultSort: 'volume',
         headers: `
             <tr>
@@ -163,7 +174,7 @@ function renderTags(tags) {
 async function fetchData() {
     try {
         if (currentView === 'traders') {
-            const url = `${API_BASE}/top-traders?sort=${currentSort}&order=${currentOrder}&limit=50&min_trades=3`;
+            const url = `${API_BASE}/top-traders?sort=${currentSort}&order=${currentOrder}&limit=50&min_trades=3&time_range=${currentTimeRange}`;
             const res = await fetch(url);
             const data = await res.json();
             if (data.success) {
@@ -171,8 +182,8 @@ async function fetchData() {
                 renderTraders(allData);
                 updateStatus(true, data.count, 'traders');
             } else {
-                allData = [];                  // ★ Limpiar
-                renderTraders([]);             // ★ Mostrar vacío
+                allData = [];
+                renderTraders([]);
                 updateStatus(false, 0, 'traders', data.error);
             }
         } else {
@@ -184,14 +195,14 @@ async function fetchData() {
                 renderTokens(allData);
                 updateStatus(true, data.count, 'tokens');
             } else {
-                allData = [];                  // ★ Limpiar
-                renderTokens([]);              // ★ Mostrar vacío
+                allData = [];
+                renderTokens([]);
                 updateStatus(false, 0, 'tokens', data.error);
             }
         }
     } catch (err) {
         console.error('Error:', err);
-        allData = [];                          // ★ Limpiar en error también
+        allData = [];
         if (currentView === 'traders') renderTraders([]);
         else renderTokens([]);
         updateStatus(false, 0, currentView, err.message);
@@ -268,7 +279,7 @@ function renderTraders(traders) {
 }
 
 // ═══════════════════════════════════
-// Render: Tokens
+// Render: Tokens — FIX: mint abreviada
 // ═══════════════════════════════════
 
 function renderTokens(tokens) {
@@ -299,6 +310,14 @@ function renderTokens(tokens) {
             ? `<span class="badge badge-amm">${t.amm}</span>`
             : '';
 
+        // FIX: Mostrar symbol/name o mint abreviada
+        const displaySymbol = (t.symbol && t.symbol !== '???' && t.symbol !== 'Unknown')
+            ? t.symbol
+            : `${t.mint_address.slice(0, 6)}...${t.mint_address.slice(-4)}`;
+        const displayName = (t.name && t.name !== '???' && t.name !== 'Unknown')
+            ? t.name
+            : `${t.mint_address.slice(0, 8)}...${t.mint_address.slice(-6)}`;
+
         return `
         <tr onclick="window.open('https://dexscreener.com/solana/${t.mint_address}','_blank')" title="${t.mint_address}">
             <td>
@@ -306,8 +325,8 @@ function renderTokens(tokens) {
                     <span class="token-rank">#${i + 1}</span>
                     <div class="token-icon">${imgHTML}</div>
                     <div class="token-info">
-                        <span class="token-name">${t.symbol || '???'} <span style="display:inline-flex;gap:3px;margin-left:4px">${ammBadge}</span></span>
-                        <span class="token-chain">${t.name || 'Unknown'}</span>
+                        <span class="token-name">${displaySymbol} <span style="display:inline-flex;gap:3px;margin-left:4px">${ammBadge}</span></span>
+                        <span class="token-chain">${displayName}</span>
                     </div>
                 </div>
             </td>
@@ -335,32 +354,43 @@ function switchView(view) {
     const config = VIEW_CONFIG[view];
     currentSort = config.defaultSort;
     currentOrder = 'desc';
+    currentTimeRange = 'all';
     searchTerm = '';
     document.getElementById('searchBox').value = '';
 
-    // ★ LIMPIAR datos anteriores inmediatamente
     allData = [];
     document.getElementById('tableBody').innerHTML = `
         <tr><td colspan="12" style="text-align:center;padding:40px;color:#5c5e64;">
             ⏳ Cargando datos...
         </td></tr>`;
 
-    // Actualizar botones de vista
+    // Botones de vista
     document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
     document.querySelector(`.view-btn[data-view="${view}"]`).classList.add('active');
 
-    // Actualizar headers
+    // Headers
     document.getElementById('tableHead').innerHTML = config.headers;
 
-    // Actualizar sub-filtros
+    // Sub-filtros: sort buttons + time filter buttons
     const subfilters = document.getElementById('subfilters');
-    subfilters.innerHTML = config.filters.map((f, i) =>
+    let filtersHTML = config.filters.map((f, i) =>
         `<button class="filter-btn ${i === 0 ? 'active' : ''}" data-sort="${f.sort}">${f.label}</button>`
     ).join('');
 
-    subfilters.querySelectorAll('.filter-btn').forEach(btn => {
+    // Agregar time range filters si existen (solo para traders)
+    if (config.timeFilters && config.timeFilters.length > 0) {
+        filtersHTML += '<span style="border-left:1px solid #2a2d35;margin:0 6px;"></span>';
+        filtersHTML += config.timeFilters.map(tf =>
+            `<button class="filter-btn time-filter ${tf.value === 'all' ? 'active' : ''}" data-time="${tf.value}">${tf.label}</button>`
+        ).join('');
+    }
+
+    subfilters.innerHTML = filtersHTML;
+
+    // Event listeners para sort filters
+    subfilters.querySelectorAll('.filter-btn:not(.time-filter)').forEach(btn => {
         btn.addEventListener('click', () => {
-            subfilters.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            subfilters.querySelectorAll('.filter-btn:not(.time-filter)').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             const newSort = btn.dataset.sort;
             if (newSort === currentSort) {
@@ -369,6 +399,16 @@ function switchView(view) {
                 currentSort = newSort;
                 currentOrder = 'desc';
             }
+            fetchData();
+        });
+    });
+
+    // Event listeners para TIME filters
+    subfilters.querySelectorAll('.time-filter').forEach(btn => {
+        btn.addEventListener('click', () => {
+            subfilters.querySelectorAll('.time-filter').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentTimeRange = btn.dataset.time;
             fetchData();
         });
     });
@@ -385,7 +425,10 @@ function updateStatus(connected, count, type, error) {
     const updateEl = document.getElementById('lastUpdate');
     if (connected) {
         const label = type === 'traders' ? 'traders' : 'tokens';
-        statusEl.innerHTML = `<span class="status-dot connected"></span> Conectado · ${count} ${label}`;
+        const timeLabel = currentView === 'traders' && currentTimeRange !== 'all'
+            ? ` (${currentTimeRange.toUpperCase()})`
+            : '';
+        statusEl.innerHTML = `<span class="status-dot connected"></span> Conectado · ${count} ${label}${timeLabel}`;
         updateEl.textContent = `Última actualización: ${new Date().toLocaleTimeString()}`;
     } else {
         statusEl.innerHTML = `<span class="status-dot error"></span> Error: ${error || 'sin conexión'}`;
@@ -407,7 +450,7 @@ document.getElementById('searchBox').addEventListener('input', (e) => {
 });
 
 // ═══════════════════════════════════
-// Inicio — Top Traders primero
+// Inicio
 // ═══════════════════════════════════
 
 switchView('traders');
@@ -416,4 +459,4 @@ fetchStats();
 setInterval(fetchData, REFRESH_INTERVAL);
 setInterval(fetchStats, 60000);
 
-console.log('🦎 Memecoin Screener v2 — Top Traders + Tokens');
+console.log('🦎 Memecoin Screener v2.1 — Top Traders + Tokens + Time Filters');
