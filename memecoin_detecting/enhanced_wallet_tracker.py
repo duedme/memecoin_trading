@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-
 """
 enhanced_wallet_tracker.py
 SEGUIMIENTO COMPLETO de wallets - Rastrea TODAS sus transacciones con memecoins
-v2: Auto-descubrimiento de wallets desde tokens recientes
+v5 - Fixes:
+  - process_transaction confía en tx['type'] de parse_swap (v4 semantics)
+  - load_processed_signatures() anti-duplicados al reiniciar
+  - Auto-descubrimiento de wallets desde tokens recientes
 """
 
 import psycopg2
@@ -15,7 +17,9 @@ from typing import List, Dict, Optional, Set
 from rpc_helpers import SolanaRPC, parse_swap_transaction, batch_process_transactions
 from collections import defaultdict
 
+# ─────────────────────────────────────────────────────────────
 # Configuración de logging
+# ─────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -28,14 +32,16 @@ if not logger.handlers:
     logger.addHandler(sh)
     logger.propagate = False
 
+
 class EnhancedWalletTracker:
     """
     SEGUIMIENTO COMPLETO de wallets
+
     Diferencias con WalletTracker normal:
     1. Rastrea TODAS las transacciones del wallet (no solo memecoins monitoreadas)
     2. Auto-descubre nuevas memecoins cuando un wallet las compra
     3. Sigue la actividad completa del wallet en la blockchain
-    4. Detecta patrones: si compra memecoin A, ¿también compra B, C, D?
+    4. Detecta patrones: si compra memecoin A, también compra B, C, D?
     5. NUEVO: Auto-descubre wallets activos desde tokens recientes
     """
 
@@ -57,24 +63,24 @@ class EnhancedWalletTracker:
 
         # NUEVO: Control de descubrimiento
         self.last_discovery_time = None
-        self.discovery_interval_minutes = 3  # Descubrir wallets cada 5 min
-        self.max_discovered_wallets = 1000  # Máximo wallets auto-descubiertos activos
-        self.min_trades_to_track = 2  # Mínimo trades para considerar un wallet interesante
+        self.discovery_interval_minutes = 3  # Descubrir wallets cada 3 min
+        self.max_discovered_wallets = 1000   # Máximo wallets auto-descubiertos activos
+        self.min_trades_to_track = 2         # Mínimo trades para considerar un wallet interesante
 
-        # Program IDs de AMMs conocidos (para detectar swaps)
+        # Program IDs de AMMs conocidos para detectar swaps
         self.amm_program_ids = {
-            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",  # Pump.fun
-            "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",  # PumpSwap
-            "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",  # Raydium AMM
-            "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",  # Raydium LaunchLab
-            "FLUXubRmkEi2q6K3Y9kBPg9248ggaZVsoSFhtJHSrm1X",  # FluxBeam
-            "HEAVENoP2qxoeuF8Dj2oT1GHEnu49U5mJYkdeC8BAX2o",  # HeavenDEX
-            "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",  # Meteora DLMM
-            "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",  # Meteora DYN2
-            "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",  # Meteora DYN
-            "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",  # Meteora DBC
-            "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG",  # Moonit
-            "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",  # Orca
+            '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',   # Pump.fun
+            'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA',   # PumpSwap
+            'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',  # Raydium AMM
+            'LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj',  # Raydium LaunchLab
+            'FLUXubRmkEi2q6K3Y9kBPg9248ggaZVsoSFhtJHSrm1X',  # FluxBeam
+            'HEAVENoP2qxoeuF8Dj2oT1GHEnu49U5mJYkdeC8BAX2o',  # HeavenDEX
+            'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',   # Meteora DLMM
+            'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG',   # Meteora DYN2
+            'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',  # Meteora DYN
+            'dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN',   # Meteora DBC
+            'MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG',   # Moonit
+            'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',   # Orca
         }
 
         # Estadísticas
@@ -101,17 +107,37 @@ class EnhancedWalletTracker:
             logger.error(f"Error conectando a PostgreSQL: {e}")
             raise
 
-    def load_all_known_tokens(self):
+    # ═══════════════════════════════════════════════════════════
+    # NUEVO v5: Anti-duplicados al reiniciar
+    # ═══════════════════════════════════════════════════════════
+    def load_processed_signatures(self):
         """
-        NUEVO: Carga TODOS los tokens conocidos (no solo últimas 24h)
-        Esto permite detectar cuando un wallet compra tokens viejos
+        Carga signatures ya procesados de la BD para evitar
+        duplicados al reiniciar el servicio.
+        Sin esto, el primer ciclo re-procesa txs que ya están en la BD.
         """
         try:
             cursor = self.conn.cursor()
             cursor.execute("""
-                SELECT token_id, mint_address
-                FROM tokens
-                WHERE status = 'active'
+                SELECT DISTINCT signature
+                FROM wallet_transactions
+                ORDER BY time DESC
+                LIMIT %s
+            """, (self.max_cache_size,))
+            rows = cursor.fetchall()
+            self.processed_signatures = {row[0] for row in rows}
+            cursor.close()
+            logger.info(f"📋 Cargados {len(self.processed_signatures)} signatures previos (anti-duplicados)")
+        except Exception as e:
+            logger.error(f"Error cargando processed_signatures: {e}")
+            self.processed_signatures = set()
+
+    def load_all_known_tokens(self):
+        """NUEVO: Carga TODOS los tokens conocidos (no solo últimas 24h)"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT token_id, mint_address FROM tokens WHERE status = 'active'
             """)
             tokens = cursor.fetchall()
             self.all_known_tokens = {row[1]: row[0] for row in tokens}
@@ -125,9 +151,7 @@ class EnhancedWalletTracker:
         """Carga wallets rastreados manualmente"""
         try:
             cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT wallet_address FROM tracked_wallets WHERE is_active = TRUE"
-            )
+            cursor.execute("SELECT wallet_address FROM tracked_wallets WHERE is_active = TRUE")
             wallets = cursor.fetchall()
             self.tracked_wallets = {row[0] for row in wallets}
             logger.info(f"Cargados {len(self.tracked_wallets)} wallets rastreados manualmente")
@@ -137,54 +161,47 @@ class EnhancedWalletTracker:
             self.tracked_wallets = set()
 
     def load_discovered_wallets(self):
-        """Carga wallets descubiertos automáticamente (que ya tienen actividad)"""
+        """Carga wallets descubiertos automáticamente que ya tienen actividad"""
         try:
             cursor = self.conn.cursor()
             cursor.execute("""
-                SELECT DISTINCT wallet_address
-                FROM wallets
-                WHERE last_seen >= NOW() - INTERVAL '7 days'
-                  AND is_active = TRUE
+                SELECT DISTINCT wallet_address FROM wallets
+                WHERE last_seen > NOW() - INTERVAL '7 days'
+                AND is_active = TRUE
             """)
             wallets = cursor.fetchall()
             self.discovered_wallets = {row[0] for row in wallets}
-            logger.info(f"Cargados {len(self.discovered_wallets)} wallets descubiertos (activos últimos 7 días)")
+            logger.info(f"Cargados {len(self.discovered_wallets)} wallets descubiertos activos (últimos 7 días)")
             cursor.close()
         except Exception as e:
             logger.error(f"Error cargando wallets descubiertos: {e}")
             self.discovered_wallets = set()
 
-    # =========================================================
-    # NUEVO: Auto-descubrimiento de wallets desde tokens
-    # =========================================================
-
     def discover_wallets_from_recent_tokens(self):
         """
         NUEVO: Descubre wallets activos escaneando transacciones de tokens recientes.
-
         Flujo:
         1. Obtiene tokens detectados en las últimas 2 horas
         2. Para cada token, escanea sus transacciones recientes
         3. Extrae los wallets que participaron
-        4. Filtra: solo wallets con >= min_trades_to_track transacciones
+        4. Filtra solo wallets con min_trades_to_track+ transacciones
         5. Agrega los mejores a discovered_wallets
         """
         try:
             cursor = self.conn.cursor()
 
-            # 1. Tokens recientes (últimas 2 horas, máx 20 tokens)
+            # 1. Tokens recientes (últimas 2 horas, máx 80 tokens)
             cursor.execute("""
-                SELECT mint_address, token_id
-                FROM tokens
-                WHERE detected_at >= NOW() - INTERVAL '2 hours'
-                  AND status = 'active'
+                SELECT mint_address, token_id FROM tokens
+                WHERE detected_at > NOW() - INTERVAL '2 hours'
+                AND status = 'active'
                 ORDER BY detected_at DESC
                 LIMIT 80
             """)
             recent_tokens = cursor.fetchall()
 
             if not recent_tokens:
-                logger.info("🔍 No hay tokens recientes para descubrir wallets")
+                logger.info("No hay tokens recientes para descubrir wallets")
                 cursor.close()
                 return 0
 
@@ -192,18 +209,12 @@ class EnhancedWalletTracker:
 
             # Wallets ya conocidos (no re-descubrir)
             all_known_wallets = self.tracked_wallets | self.discovered_wallets
+            new_wallets_found = {}  # wallet_address -> {trades: N, tokens: set}
 
-            new_wallets_found = {}  # wallet_address -> {trades: N, tokens: set()}
-
-            # 2. Escanear transacciones de cada token
             for mint_address, token_id in recent_tokens:
                 try:
-                    # Obtener firmas recientes del token
-                    signatures_data = self.rpc.get_signatures_for_address(
-                        mint_address,
-                        limit=50
-                    )
-
+                    # 2. Escanear transacciones de cada token
+                    signatures_data = self.rpc.get_signatures_for_address(mint_address, limit=50)
                     if not signatures_data:
                         continue
 
@@ -212,11 +223,9 @@ class EnhancedWalletTracker:
                         sig = sig_data.get('signature')
                         if not sig:
                             continue
-
                         tx = self.rpc.get_transaction(sig)
                         if not tx:
                             continue
-
                         parsed = parse_swap_transaction(tx)
                         if not parsed or not parsed.get('wallet'):
                             continue
@@ -236,8 +245,8 @@ class EnhancedWalletTracker:
 
                         # Estimar volumen
                         sol_addresses = {
-                            "So11111111111111111111111111111111111111112",
-                            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                            'So11111111111111111111111111111111111111112',
+                            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
                         }
                         if parsed.get('token_in') in sol_addresses:
                             new_wallets_found[wallet]['volume_sol'] += parsed.get('amount_in', 0)
@@ -261,7 +270,7 @@ class EnhancedWalletTracker:
             # 4. Limitar cantidad (top por volumen)
             slots_available = self.max_discovered_wallets - len(self.discovered_wallets - self.tracked_wallets)
             if slots_available <= 0:
-                logger.info(f"🔍 Ya tenemos {len(self.discovered_wallets)} wallets descubiertos (máximo: {self.max_discovered_wallets})")
+                logger.info(f"Ya tenemos {len(self.discovered_wallets)} wallets descubiertos (máximo {self.max_discovered_wallets})")
                 return 0
 
             sorted_wallets = sorted(
@@ -278,14 +287,14 @@ class EnhancedWalletTracker:
                 added += 1
                 logger.info(
                     f"🆕 Wallet descubierto: {wallet_addr[:12]}... "
-                    f"({info['trades']} trades, {len(info['tokens'])} tokens, "
-                    f"{info['volume_sol']:.2f} SOL)"
+                    f"{info['trades']} trades, {len(info['tokens'])} tokens, "
+                    f"{info['volume_sol']:.2f} SOL"
                 )
 
             if added > 0:
-                logger.info(f"✅ {added} nuevos wallets agregados al tracking (total: {len(self.discovered_wallets)})")
+                logger.info(f"✅ {added} nuevos wallets agregados al tracking (total {len(self.discovered_wallets)})")
             else:
-                logger.info(f"🔍 No se encontraron wallets nuevos que cumplan los criterios")
+                logger.info(f"No se encontraron wallets nuevos que cumplan los criterios")
 
             return added
 
@@ -301,12 +310,11 @@ class EnhancedWalletTracker:
         try:
             cursor = self.conn.cursor()
             cursor.execute("""
-                SELECT wallet_address
-                FROM wallets
+                SELECT wallet_address FROM wallets
                 WHERE last_seen < NOW() - INTERVAL '24 hours'
-                  AND wallet_address NOT IN (
-                      SELECT wallet_address FROM tracked_wallets WHERE is_active = TRUE
-                  )
+                AND wallet_address NOT IN (
+                    SELECT wallet_address FROM tracked_wallets WHERE is_active = TRUE
+                )
             """)
             inactive = {row[0] for row in cursor.fetchall()}
             cursor.close()
@@ -317,13 +325,10 @@ class EnhancedWalletTracker:
                 logger.info(f"🧹 {len(pruned)} wallets inactivos removidos del tracking")
 
             return len(pruned)
+
         except Exception as e:
             logger.error(f"Error en poda de wallets: {e}")
             return 0
-
-    # =========================================================
-    # Funciones existentes (sin cambios)
-    # =========================================================
 
     def is_memecoin_transaction(self, tx: Dict) -> bool:
         """Determina si una transacción es un swap de memecoin"""
@@ -336,17 +341,15 @@ class EnhancedWalletTracker:
                 return False
 
             non_memecoins = {
-                "So11111111111111111111111111111111111111112",
-                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-                "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs",
+                'So11111111111111111111111111111111111111112',
+                'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+                'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+                '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',
             }
-
             token_in = tx['token_in']
             token_out = tx['token_out']
             is_memecoin = (token_in not in non_memecoins) or (token_out not in non_memecoins)
             return is_memecoin
-
         except Exception as e:
             logger.error(f"Error verificando memecoin transaction: {e}")
             return False
@@ -358,32 +361,29 @@ class EnhancedWalletTracker:
                 return self.all_known_tokens[mint_address]
 
             cursor = self.conn.cursor()
-
             try:
                 cursor.execute("""
-                    INSERT INTO tokens (
-                        mint_address, amm, created_at, detected_at,
-                        creation_signature, status, retention_category
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO tokens (mint_address, amm, created_at, detected_at,
+                                        creation_signature, status, retention_category)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (mint_address) DO NOTHING
                     RETURNING token_id
                 """, (
                     mint_address,
-                    "auto-discovered",
+                    'auto-discovered',
                     datetime.fromtimestamp(tx.get('blocktime', time.time())),
                     datetime.now(),
                     tx.get('signature', ''),
                     'active',
-                    'short_term'
+                    'shortterm'
                 ))
                 result = cursor.fetchone()
-
                 if result:
                     token_id = result[0]
                     self.conn.commit()
                     self.all_known_tokens[mint_address] = token_id
                     self.new_tokens_discovered += 1
-                    logger.info(f"🆕 Token nuevo agregado: {mint_address[:16]}... (ID: {token_id})")
+                    logger.info(f"🪙 Token nuevo agregado: {mint_address[:16]}... ID={token_id}")
                     cursor.close()
                     return token_id
                 else:
@@ -398,7 +398,6 @@ class EnhancedWalletTracker:
                         cursor.close()
                         return token_id
                     else:
-                        logger.error(f"Token {mint_address} no encontrado después de ON CONFLICT")
                         cursor.close()
                         return None
 
@@ -426,9 +425,7 @@ class EnhancedWalletTracker:
     def scan_wallet_all_transactions(self, wallet_address: str, limit: int = 100) -> List[Dict]:
         """Escanea TODAS las transacciones del wallet"""
         try:
-            signatures_data = self.rpc.get_signatures_for_address(
-                wallet_address, limit=limit
-            )
+            signatures_data = self.rpc.get_signatures_for_address(wallet_address, limit=limit)
             if not signatures_data:
                 return []
 
@@ -441,7 +438,7 @@ class EnhancedWalletTracker:
             if not new_signatures:
                 return []
 
-            logger.info(f"📡 Escaneando {len(new_signatures)} transacciones de {wallet_address[:8]}...")
+            logger.info(f"🔍 Escaneando {len(new_signatures)} transacciones de {wallet_address[:8]}...")
 
             full_transactions = []
             for sig in new_signatures:
@@ -451,17 +448,19 @@ class EnhancedWalletTracker:
 
             transactions = batch_process_transactions(full_transactions)
 
+            # Filtrar solo memecoin transactions
             memecoin_txs = []
             for tx in transactions:
                 if self.is_memecoin_transaction(tx):
                     memecoin_txs.append(tx)
-                    self.processed_signatures.add(tx['signature'])
+                self.processed_signatures.add(tx['signature'])
 
+            # Limitar cache size
             if len(self.processed_signatures) > self.max_cache_size:
-                self.processed_signatures = set(list(self.processed_signatures)[-self.max_cache_size//2:])
+                self.processed_signatures = set(list(self.processed_signatures)[-self.max_cache_size // 2:])
 
             if memecoin_txs:
-                logger.info(f"✅ {wallet_address[:8]}... : {len(memecoin_txs)} transacciones de memecoins encontradas")
+                logger.info(f"  {wallet_address[:8]}... {len(memecoin_txs)} transacciones de memecoins encontradas")
 
             return memecoin_txs
 
@@ -478,26 +477,28 @@ class EnhancedWalletTracker:
             groups = defaultdict(list)
             for tx in transactions:
                 memecoin_mint = None
-                if tx['token_out'] not in ["So11111111111111111111111111111111111111112"]:
+                if tx['token_out'] not in ('So11111111111111111111111111111111111111112',):
                     memecoin_mint = tx['token_out']
-                elif tx['token_in'] not in ["So11111111111111111111111111111111111111112"]:
+                elif tx['token_in'] not in ('So11111111111111111111111111111111111111112',):
                     memecoin_mint = tx['token_in']
 
                 if not memecoin_mint:
                     continue
 
-                time_window = tx['blocktime'] // 300
+                # Clave de agrupación
+                time_window = tx['blocktime'] // 300  # Ventanas de 5 minutos
                 key = (tx['wallet'], memecoin_mint, tx['type'], time_window)
                 groups[key].append(tx)
 
+            # Marcar transacciones parciales
             for key, group_txs in groups.items():
                 if len(group_txs) > 1:
-                    order_id = f"{key[0][:8]}_{key[1][:8]}_{key[2]}_{key[3]}"
+                    order_id = f"{key[0][:8]}{key[1][:8]}{key[2]}{key[3]}"
                     for i, tx in enumerate(group_txs, 1):
                         tx['is_partial'] = True
                         tx['order_id'] = order_id
                         tx['partial_fill_index'] = i
-                    logger.info(f"✂️ Detectadas {len(group_txs)} transacciones parciales para orden {order_id}")
+                    logger.info(f"🧩 Detectadas {len(group_txs)} transacciones parciales para orden {order_id}")
 
             return transactions
 
@@ -505,6 +506,9 @@ class EnhancedWalletTracker:
             logger.error(f"Error detectando parciales: {e}")
             return transactions
 
+    # ═══════════════════════════════════════════════════════════
+    # v4 FIX: process_transaction confía en tx['type']
+    # ═══════════════════════════════════════════════════════════
     def process_transaction(self, tx: Dict):
         """
         Procesa una transacción de swap.
@@ -566,31 +570,28 @@ class EnhancedWalletTracker:
             if not token_id:
                 return
 
-            block_time = tx.get('block_time', 0)
+            block_time = tx.get('blocktime', 0)
             if block_time > 0:
                 transaction_time = datetime.fromtimestamp(block_time)
             else:
                 transaction_time = datetime.now()
 
-            # Llamar función SQL
+            # Llamar función SQL para procesar la transacción
             cursor = self.conn.cursor()
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT process_transaction(
                     %s, %s, %s, %s, %s, %s, %s, %s
                 )
-                """,
-                (
-                    wallet,
-                    memecoin_mint,
-                    signature,
-                    tx_type,
-                    token_amount,
-                    sol_amount,
-                    price,
-                    transaction_time
-                )
-            )
+            """, (
+                wallet,
+                memecoin_mint,
+                signature,
+                tx_type,
+                token_amount,
+                sol_amount,
+                price,
+                transaction_time
+            ))
             self.conn.commit()
             cursor.close()
 
@@ -598,16 +599,15 @@ class EnhancedWalletTracker:
             self.transactions_processed += 1
 
             logger.info(
-                f"{tx_type.upper()}: {wallet[:12]}... | "
-                f"{token_amount:.2f} tokens @ {price:.8f} SOL | "
-                f"Total: {sol_amount:.4f} SOL"
+                f"{'🟢' if tx_type == 'buy' else '🔴'} {tx_type.upper()} {wallet[:12]}... "
+                f"{token_amount:.2f} tokens @ {price:.8f} SOL "
+                f"(Total: {sol_amount:.4f} SOL)"
             )
 
         except Exception as e:
             logger.error(f"Error procesando transacción: {e}")
             self.conn.rollback()
             self.errors_count += 1
-
 
     def track_wallet_batch(self, wallet_addresses: List[str]):
         """Rastrea un lote de wallets (TODAS sus transacciones)"""
@@ -631,18 +631,18 @@ class EnhancedWalletTracker:
                 logger.warning("No hay wallets para rastrear")
                 return 0
 
-            logger.info(f"🔍 Rastreando {len(all_wallets)} wallets (TODAS sus transacciones)...")
+            logger.info(f"📊 Rastreando {len(all_wallets)} wallets (TODAS sus transacciones)...")
 
             batch_size = 10
             transactions_count = 0
             for i in range(0, len(all_wallets), batch_size):
-                batch = all_wallets[i:i+batch_size]
+                batch = all_wallets[i:i + batch_size]
                 initial_count = self.transactions_processed
                 self.track_wallet_batch(batch)
                 batch_txs = self.transactions_processed - initial_count
                 transactions_count += batch_txs
                 if batch_txs > 0:
-                    logger.info(f"Lote {i//batch_size + 1}: {batch_txs} transacciones procesadas")
+                    logger.info(f"Lote {i // batch_size + 1}: {batch_txs} transacciones procesadas")
 
             return transactions_count
 
@@ -654,42 +654,44 @@ class EnhancedWalletTracker:
         """Imprime estadísticas"""
         uptime = datetime.now() - self.start_time
         logger.info("=" * 70)
-        logger.info("📊 ENHANCED WALLET TRACKER - ESTADÍSTICAS")
+        logger.info("ENHANCED WALLET TRACKER - ESTADÍSTICAS")
         logger.info("=" * 70)
         logger.info(f"Tiempo activo: {uptime}")
-        logger.info(f"Wallets rastreados manualmente: {len(self.tracked_wallets)}")
+        logger.info(f"Wallets rastreados (manualmente): {len(self.tracked_wallets)}")
         logger.info(f"Wallets descubiertos: {len(self.discovered_wallets)}")
         logger.info(f"Total wallets: {len(self.tracked_wallets | self.discovered_wallets)}")
         logger.info(f"Tokens conocidos: {len(self.all_known_tokens)}")
         logger.info(f"Tokens nuevos descubiertos: {self.new_tokens_discovered}")
         logger.info(f"Transacciones procesadas: {self.transactions_processed}")
+        logger.info(f"Signatures en cache: {len(self.processed_signatures)}")
         logger.info(f"Errores: {self.errors_count}")
         logger.info("=" * 70)
 
-    def add_wallet_to_track(self, wallet_address: str, label: str = "", reason: str = ""):
+    def add_wallet_to_track(self, wallet_address: str, label: str = '', reason: str = ''):
         """Agrega wallet al tracking"""
         try:
             cursor = self.conn.cursor()
             cursor.execute("""
                 INSERT INTO tracked_wallets (wallet_address, label, reason)
                 VALUES (%s, %s, %s)
-                ON CONFLICT (wallet_address) DO UPDATE
-                SET is_active = TRUE
+                ON CONFLICT (wallet_address) DO UPDATE SET is_active = TRUE
             """, (wallet_address, label, reason))
             self.conn.commit()
             cursor.close()
             self.tracked_wallets.add(wallet_address)
-            logger.info(f"✅ Wallet agregado: {wallet_address} ({label})")
+            logger.info(f"✅ Wallet agregado: {wallet_address} {label}")
         except Exception as e:
             logger.error(f"Error agregando wallet: {e}")
 
     def run(self, reload_interval_minutes: int = 30, cycle_interval_seconds: int = 60):
         """
-        Bucle principal
-        MEJORADO: Incluye auto-descubrimiento periódico de wallets
+        Bucle principal MEJORADO
+        Incluye auto-descubrimiento periódico de wallets
         """
         logger.info("🚀 Iniciando ENHANCED WalletTracker (seguimiento completo)...")
+
         self.connect_db()
+        self.load_processed_signatures()  # ← NUEVO v5: anti-duplicados
         self.load_all_known_tokens()
         self.load_tracked_wallets()
         self.load_discovered_wallets()
@@ -703,15 +705,15 @@ class EnhancedWalletTracker:
                 cycle_start = time.time()
 
                 # Recargar listas periódicamente
-                if datetime.now() - last_reload >= timedelta(minutes=reload_interval_minutes):
-                    logger.info("♻️ Recargando listas...")
+                if datetime.now() - last_reload > timedelta(minutes=reload_interval_minutes):
+                    logger.info("🔄 Recargando listas...")
                     self.load_all_known_tokens()
                     self.load_tracked_wallets()
                     self.load_discovered_wallets()
                     last_reload = datetime.now()
 
                 # NUEVO: Auto-descubrir wallets cada N minutos
-                if datetime.now() - self.last_discovery_time >= timedelta(minutes=self.discovery_interval_minutes):
+                if datetime.now() - self.last_discovery_time > timedelta(minutes=self.discovery_interval_minutes):
                     logger.info("🔍 Iniciando auto-descubrimiento de wallets...")
                     new_found = self.discover_wallets_from_recent_tokens()
                     pruned = self.prune_inactive_wallets()
@@ -727,14 +729,13 @@ class EnhancedWalletTracker:
                 if cycle_count % 10 == 0:
                     self.print_stats()
 
-                # Esperar
                 elapsed = time.time() - cycle_start
                 wait_time = max(0, cycle_interval_seconds - elapsed)
                 logger.info(f"Ciclo {cycle_count} completado en {elapsed:.2f}s. Esperando {wait_time:.2f}s...")
                 time.sleep(wait_time)
 
         except KeyboardInterrupt:
-            logger.info("\n⚠️  Deteniendo...")
+            logger.info("⛔ Deteniendo...")
             self.print_stats()
         except Exception as e:
             logger.error(f"Error fatal: {e}")
@@ -748,14 +749,11 @@ if __name__ == "__main__":
     DB_CONFIG = {
         "host": "localhost",
         "port": 5432,
-        "database": "memecoins_db",
+        "database": "memecoinsdb",
         "user": "postgres",
         "password": "12345"
     }
-
     RPC_URL = "http://127.0.0.1:7211"
+
     tracker = EnhancedWalletTracker(DB_CONFIG, RPC_URL)
-    tracker.run(
-        reload_interval_minutes=30,
-        cycle_interval_seconds=60  # 1 minuto entre ciclos
-    )
+    tracker.run(reload_interval_minutes=30, cycle_interval_seconds=60)  # 1 minuto entre ciclos
