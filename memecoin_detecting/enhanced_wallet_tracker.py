@@ -752,8 +752,8 @@ if __name__ == "__main__":
         'host': 'localhost',
         'port': 5432,
         'database': 'memecoins_db',
-        'user': 'rebelforce',
-        'password': 'Lol123123!'
+        'user': 'postgres',
+        'password': '12345'
     }
     RPC_URL = "http://127.0.0.1:7211"
 
