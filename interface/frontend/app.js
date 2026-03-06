@@ -11,6 +11,8 @@ let currentOrder = 'desc';
 let searchTerm = '';
 let allData = [];
 
+const REFRESH_INTERVAL = 15000;
+
 // ═══════════════════════════════════
 // Configuración de filtros por vista
 // ═══════════════════════════════════
@@ -169,6 +171,8 @@ async function fetchData() {
                 renderTraders(allData);
                 updateStatus(true, data.count, 'traders');
             } else {
+                allData = [];                  // ★ Limpiar
+                renderTraders([]);             // ★ Mostrar vacío
                 updateStatus(false, 0, 'traders', data.error);
             }
         } else {
@@ -180,11 +184,16 @@ async function fetchData() {
                 renderTokens(allData);
                 updateStatus(true, data.count, 'tokens');
             } else {
+                allData = [];                  // ★ Limpiar
+                renderTokens([]);              // ★ Mostrar vacío
                 updateStatus(false, 0, 'tokens', data.error);
             }
         }
     } catch (err) {
         console.error('Error:', err);
+        allData = [];                          // ★ Limpiar en error también
+        if (currentView === 'traders') renderTraders([]);
+        else renderTokens([]);
         updateStatus(false, 0, currentView, err.message);
     }
 }
@@ -329,6 +338,13 @@ function switchView(view) {
     searchTerm = '';
     document.getElementById('searchBox').value = '';
 
+    // ★ LIMPIAR datos anteriores inmediatamente
+    allData = [];
+    document.getElementById('tableBody').innerHTML = `
+        <tr><td colspan="12" style="text-align:center;padding:40px;color:#5c5e64;">
+            ⏳ Cargando datos...
+        </td></tr>`;
+
     // Actualizar botones de vista
     document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
     document.querySelector(`.view-btn[data-view="${view}"]`).classList.add('active');
@@ -342,7 +358,6 @@ function switchView(view) {
         `<button class="filter-btn ${i === 0 ? 'active' : ''}" data-sort="${f.sort}">${f.label}</button>`
     ).join('');
 
-    // Bind click en filtros
     subfilters.querySelectorAll('.filter-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             subfilters.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
@@ -358,7 +373,6 @@ function switchView(view) {
         });
     });
 
-    // Placeholder del search
     document.getElementById('searchBox').placeholder = view === 'traders'
         ? '🔍 Buscar wallet o tag...'
         : '🔍 Buscar token o pegar dirección...';
