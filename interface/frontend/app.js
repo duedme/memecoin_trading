@@ -3,7 +3,9 @@
 // Top Traders es la vista principal por defecto
 // ══════════════════════════════════════════════════
 
-const API_BASE = 'http://localhost:8200/api';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+
+const API_BASE = `${BACKEND_URL}/api`;
 const REFRESH_INTERVAL = 15000;
 
 let currentView = 'traders';  // ← TRADERS ES EL DEFAULT
