@@ -5,7 +5,13 @@ on:
         branches:
             - main
         paths:
-            - interface/frontend
+            - interface/frontend/**
+    workflow_dispatch:
+      inputs:
+        path:
+          description: "Path to deploy"
+          required: true
+          default: "interface/frontend/**"
 
 jobs:
     deploy:
