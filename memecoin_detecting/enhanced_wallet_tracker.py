@@ -32,6 +32,7 @@ sh = logging.StreamHandler()
 sh.setFormatter(formatter)
 logger.addHandler(fh)
 logger.addHandler(sh)
+logging.getLogger().handlers.clear()
 logger.propagate = False
 
 class EnhancedWalletTracker:
