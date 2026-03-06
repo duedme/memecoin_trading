@@ -1,44 +1,44 @@
 name: Memecoin's Frontend Interface Deploy
 
 on:
-    push:
-        branches:
-            - main
-        paths:
-            - interface/frontend/**
-    workflow_dispatch:
-      inputs:
-        path:
-          description: "Path to deploy"
-          required: true
-          default: "interface/frontend/**"
+  push:
+    branches:
+      - main
+    paths:
+      - interface/frontend/**
+  workflow_dispatch:
+    inputs:
+      path:
+        description: "Path to deploy"
+        required: true
+        default: "interface/frontend/**"
 
 jobs:
-    deploy:
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v3
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-            - name: Tailscale Login
-              uses: tailscale/github-action@v4
-              with:
-                oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-                oauth-secret: ${{ secrets.TS_OAUTH_SECRET}}
-                tags: ${{ vars.TS_CI_TAG }}
+      - name: Tailscale Login
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: ${{ vars.TS_CI_TAG }}
 
-            - name: SCP to VPS
-              working-directory: interface/frontend
-              env:
-                VPS_IP: ${{ secrets.VPS_IP }}
-                VPS_USERNAME: ${{ vars.VPS_USERNAME }}
-              run: |
-                scp -pr * $VPS_USERNAME@$VPS_IP:/var/www/memecoins/
+      - name: SCP to VPS
+        working-directory: interface/frontend
+        env:
+          VPS_IP: ${{ secrets.VPS_IP }}
+          VPS_USERNAME: ${{ vars.VPS_USERNAME }}
+        run: |
+          scp -pr * $VPS_USERNAME@$VPS_IP:/var/www/memecoins/
 
-            - name: SCP to Node
-              working-directory: interface/frontend
-              env:
-                NODE_IP: ${{ secrets.NODE_IP }}
-                NODE_USERNAME: ${{ vars.NODE_USERNAME }}
-              run: |
-                scp -pr * $NODE_USERNAME@$NODE_IP:/scripts/memecoin_page/
+      - name: SCP to Node
+        working-directory: interface/frontend
+        env:
+          NODE_IP: ${{ secrets.NODE_IP }}
+          NODE_USERNAME: ${{ vars.NODE_USERNAME }}
+        run: |
+          scp -pr * $NODE_USERNAME@$NODE_IP:/scripts/memecoin_page/
