@@ -749,7 +749,7 @@ if __name__ == "__main__":
     DB_CONFIG = {
         "host": "localhost",
         "port": 5432,
-        "database": "memecoinsdb",
+        "database": "memecoins_db",
         "user": "postgres",
         "password": "12345"
     }
