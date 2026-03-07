@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """
-api_server.py
-API REST para alimentar el frontend — Tokens + Top Traders
-v2.1 FIXES:
-  - Tokens: mostrar mint_address abreviada cuando no hay name/symbol
-  - Top Traders: filtro por intervalo de tiempo (time_range)
-  - Win rate: corregido cálculo (no siempre 100%)
+api_server.py v2
+API REST — Tokens + Top Traders con filtros de tiempo y win_rate corregido
 """
 
 from flask import Flask, jsonify, request
@@ -21,8 +17,8 @@ DB_CONFIG = {
     "host": "localhost",
     "port": 5432,
     "database": "memecoins_db",
-    "user": "rebelforce",
-    "password": "Lol123123!"
+    "user": "postgres",
+    "password": "12345"
 }
 
 
@@ -38,6 +34,19 @@ def get_db():
 
 
 # ═══════════════════════════════════════
+# Helper: time intervals
+# ═══════════════════════════════════════
+
+TIME_RANGE_MAP = {
+    '1h':  '1 hour',
+    '6h':  '6 hours',
+    '24h': '24 hours',
+    '7d':  '7 days',
+    '30d': '30 days',
+}
+
+
+# ═══════════════════════════════════════
 # ENDPOINT: Top Traders
 # ═══════════════════════════════════════
 
@@ -46,10 +55,10 @@ def get_top_traders():
     """
     Top traders ordenados por P&L, win rate, ROI, etc.
     Query params:
-      - sort: pnl, win_rate, roi, trades, invested (default: pnl)
-      - order: asc/desc (default: desc)
-      - limit: máximo resultados (default: 50, max: 200)
-      - min_trades: mínimo de trades para aparecer (default: 3)
+      - sort: pnl, win_rate, roi, trades, invested, best_trade
+      - order: asc/desc
+      - limit: max results (default 50, max 200)
+      - min_trades: minimum trades to appear (default 3)
       - time_range: 1h, 6h, 24h, 7d, 30d, all (default: all)
     """
     sort_field = request.args.get('sort', 'pnl')
@@ -58,191 +67,189 @@ def get_top_traders():
     min_trades = int(request.args.get('min_trades', 3))
     time_range = request.args.get('time_range', 'all')
 
-    sort_map = {
-        'pnl': 'total_pnl',
-        'win_rate': 'win_rate',
-        'roi': 'roi_percentage',
-        'trades': 'total_trades',
-        'invested': 'total_invested',
-        'realized': 'total_realized',
-        'best_trade': 'best_trade',
-        'last_seen': 'last_seen',
-    }
-    sort_col = sort_map.get(sort_field, 'total_pnl')
     order_dir = 'DESC' if order == 'DESC' else 'ASC'
-
-    # Mapear time_range a intervalo SQL
-    time_filter_map = {
-        '1h':  "AND wt.time >= NOW() - INTERVAL '1 hour'",
-        '6h':  "AND wt.time >= NOW() - INTERVAL '6 hours'",
-        '24h': "AND wt.time >= NOW() - INTERVAL '24 hours'",
-        '7d':  "AND wt.time >= NOW() - INTERVAL '7 days'",
-        '30d': "AND wt.time >= NOW() - INTERVAL '30 days'",
-        'all': '',
-    }
-    time_filter = time_filter_map.get(time_range, '')
 
     conn = get_db()
     cursor = conn.cursor()
 
-    if time_range == 'all':
-        # ─── Modo ALL: usa tabla wallets pre-calculada ───
-        # PERO recalculamos win_rate correctamente
-        query = f"""
-        SELECT
-            w.wallet_address,
-            w.total_trades,
-            w.total_profit_loss AS total_pnl,
-            w.total_invested,
-            w.total_realized,
-            w.best_trade,
-            w.worst_trade,
-            w.first_seen,
-            w.last_seen,
-            w.is_active,
-            w.tags,
-
-            -- ROI
-            CASE WHEN w.total_invested > 0
-                THEN ROUND((w.total_profit_loss / w.total_invested * 100)::numeric, 2)
-                ELSE 0
-            END AS roi_percentage,
-
-            -- Win rate CORREGIDO: basado en posiciones cerradas con ganancia
-            COALESCE((
-                SELECT CASE WHEN COUNT(*) > 0
-                    THEN ROUND(
-                        COUNT(*) FILTER (WHERE wp.realized_pnl > 0)::numeric
-                        / COUNT(*)::numeric * 100, 2
-                    )
-                    ELSE 0
-                END
-                FROM wallet_positions wp
-                WHERE wp.wallet_id = w.wallet_id
-                  AND wp.status = 'closed'
-            ), 0) AS win_rate,
-
-            -- Posiciones abiertas
-            (SELECT COUNT(*)
-             FROM wallet_positions wp
-             WHERE wp.wallet_id = w.wallet_id
-               AND wp.status != 'closed'
-               AND wp.current_balance > 0
-            ) AS open_positions,
-
-            -- Tokens distintos
-            (SELECT COUNT(DISTINCT wp.token_id)
-             FROM wallet_positions wp
-             WHERE wp.wallet_id = w.wallet_id
-            ) AS tokens_traded
-
-        FROM wallets w
-        WHERE w.total_trades >= %s
-        ORDER BY {sort_col} {order_dir} NULLS LAST
-        LIMIT %s
-        """
-        cursor.execute(query, (min_trades, limit))
-
-    else:
-        # ─── Modo TIME RANGE: calcula todo on-the-fly desde wallet_transactions ───
-        query = f"""
-        WITH filtered_txs AS (
-            SELECT
-                wt.wallet_id,
-                wt.token_id,
-                wt.tx_type,
-                wt.token_amount,
-                wt.sol_amount,
-                wt.price,
-                wt.time
-            FROM wallet_transactions wt
-            WHERE 1=1 {time_filter}
-        ),
-        wallet_stats AS (
-            SELECT
-                ft.wallet_id,
-                COUNT(*) AS total_trades,
-
-                -- Invertido = suma de sol_amount en buys
-                COALESCE(SUM(ft.sol_amount) FILTER (WHERE ft.tx_type = 'buy'), 0) AS total_invested,
-
-                -- Realizado = suma de sol_amount en sells
-                COALESCE(SUM(ft.sol_amount) FILTER (WHERE ft.tx_type = 'sell'), 0) AS total_realized,
-
-                -- P&L = sells - buys
-                COALESCE(SUM(ft.sol_amount) FILTER (WHERE ft.tx_type = 'sell'), 0)
-                - COALESCE(SUM(ft.sol_amount) FILTER (WHERE ft.tx_type = 'buy'), 0) AS total_pnl,
-
-                -- Best/worst individual trade (por sol_amount en sells, negativo en buys)
-                MAX(CASE WHEN ft.tx_type = 'sell' THEN ft.sol_amount ELSE NULL END) AS best_trade,
-                MAX(CASE WHEN ft.tx_type = 'buy' THEN -ft.sol_amount ELSE NULL END) AS worst_trade,
-
-                MIN(ft.time) AS first_seen,
-                MAX(ft.time) AS last_seen,
-
-                COUNT(DISTINCT ft.token_id) AS tokens_traded
-
-            FROM filtered_txs ft
-            GROUP BY ft.wallet_id
-            HAVING COUNT(*) >= %s
-        ),
-        -- Win rate por token en el periodo
-        token_pnl AS (
-            SELECT
-                ft.wallet_id,
-                ft.token_id,
-                COALESCE(SUM(ft.sol_amount) FILTER (WHERE ft.tx_type = 'sell'), 0)
-                - COALESCE(SUM(ft.sol_amount) FILTER (WHERE ft.tx_type = 'buy'), 0) AS token_pnl
-            FROM filtered_txs ft
-            GROUP BY ft.wallet_id, ft.token_id
-            -- Solo tokens donde hubo al menos 1 buy Y 1 sell (ciclo completo)
-            HAVING COUNT(*) FILTER (WHERE ft.tx_type = 'buy') > 0
-               AND COUNT(*) FILTER (WHERE ft.tx_type = 'sell') > 0
-        ),
-        win_rates AS (
-            SELECT
-                wallet_id,
-                CASE WHEN COUNT(*) > 0
-                    THEN ROUND(
-                        COUNT(*) FILTER (WHERE token_pnl > 0)::numeric
-                        / COUNT(*)::numeric * 100, 2
-                    )
-                    ELSE 0
-                END AS win_rate
-            FROM token_pnl
-            GROUP BY wallet_id
-        )
-        SELECT
-            w.wallet_address,
-            ws.total_trades,
-            ws.total_pnl,
-            ws.total_invested,
-            ws.total_realized,
-            COALESCE(wr.win_rate, 0) AS win_rate,
-            ws.best_trade,
-            ws.worst_trade,
-            ws.first_seen,
-            ws.last_seen,
-            w.is_active,
-            w.tags,
-            ws.tokens_traded,
-
-            CASE WHEN ws.total_invested > 0
-                THEN ROUND((ws.total_pnl / ws.total_invested * 100)::numeric, 2)
-                ELSE 0
-            END AS roi_percentage,
-
-            0 AS open_positions
-
-        FROM wallet_stats ws
-        JOIN wallets w ON ws.wallet_id = w.wallet_id
-        LEFT JOIN win_rates wr ON ws.wallet_id = wr.wallet_id
-        ORDER BY {sort_col} {order_dir} NULLS LAST
-        LIMIT %s
-        """
-        cursor.execute(query, (min_trades, limit))
-
     try:
+        # ──────────────────────────────────────
+        # MODE: ALL (use pre-calculated wallets table)
+        # ──────────────────────────────────────
+        if time_range == 'all' or time_range not in TIME_RANGE_MAP:
+            sort_map = {
+                'pnl': 'w.total_profit_loss',
+                'win_rate': 'real_win_rate',
+                'roi': 'roi_percentage',
+                'trades': 'w.total_trades',
+                'invested': 'w.total_invested',
+                'realized': 'w.total_realized',
+                'best_trade': 'w.best_trade',
+                'last_seen': 'w.last_seen',
+            }
+            sort_col = sort_map.get(sort_field, 'w.total_profit_loss')
+
+            query = f"""
+            SELECT
+                w.wallet_address,
+                w.total_trades,
+                w.total_profit_loss,
+                w.total_invested,
+                w.total_realized,
+                w.avg_profit_per_trade,
+                w.best_trade,
+                w.worst_trade,
+                w.first_seen,
+                w.last_seen,
+                w.is_active,
+                w.tags,
+
+                -- ROI
+                CASE WHEN w.total_invested > 0
+                    THEN ROUND((w.total_profit_loss / w.total_invested * 100)::numeric, 2)
+                    ELSE 0
+                END AS roi_percentage,
+
+                -- Win rate RECALCULADO: solo posiciones cerradas
+                COALESCE((
+                    SELECT CASE WHEN COUNT(*) > 0
+                        THEN ROUND(
+                            COUNT(*) FILTER (WHERE realized_pnl > 0)::numeric
+                            / COUNT(*)::numeric * 100, 2)
+                        ELSE 0 END
+                    FROM wallet_positions wp2
+                    WHERE wp2.wallet_id = w.wallet_id AND wp2.status = 'closed'
+                ), 0) AS real_win_rate,
+
+                -- Posiciones abiertas
+                (SELECT COUNT(*)
+                 FROM wallet_positions wp
+                 WHERE wp.wallet_id = w.wallet_id
+                   AND wp.status != 'closed'
+                   AND wp.current_balance > 0
+                ) AS open_positions,
+
+                -- Total unrealized
+                (SELECT COALESCE(SUM(wp.unrealized_pnl), 0)
+                 FROM wallet_positions wp
+                 WHERE wp.wallet_id = w.wallet_id
+                ) AS total_unrealized_pnl,
+
+                -- Tokens traded
+                (SELECT COUNT(DISTINCT wp.token_id)
+                 FROM wallet_positions wp
+                 WHERE wp.wallet_id = w.wallet_id
+                ) AS tokens_traded
+
+            FROM wallets w
+            WHERE w.total_trades >= %s
+            ORDER BY {sort_col} {order_dir} NULLS LAST
+            LIMIT %s
+            """
+            cursor.execute(query, (min_trades, limit))
+
+        # ──────────────────────────────────────
+        # MODE: TIME-FILTERED (calculate on-the-fly)
+        # ──────────────────────────────────────
+        else:
+            interval = TIME_RANGE_MAP[time_range]
+
+            sort_map = {
+                'pnl': 'total_pnl',
+                'win_rate': 'real_win_rate',
+                'roi': 'roi_percentage',
+                'trades': 'total_trades',
+                'invested': 'total_invested',
+                'best_trade': 'best_trade',
+            }
+            sort_col = sort_map.get(sort_field, 'total_pnl')
+
+            query = f"""
+            WITH period_txns AS (
+                SELECT
+                    wt.wallet_id,
+                    wt.token_id,
+                    wt.tx_type,
+                    wt.token_amount,
+                    wt.sol_amount,
+                    wt.price
+                FROM wallet_transactions wt
+                WHERE wt.time >= NOW() - INTERVAL '{interval}'
+            ),
+            wallet_token_stats AS (
+                SELECT
+                    pt.wallet_id,
+                    pt.token_id,
+                    SUM(CASE WHEN pt.tx_type = 'buy' THEN pt.sol_amount ELSE 0 END) AS bought_sol,
+                    SUM(CASE WHEN pt.tx_type = 'sell' THEN pt.sol_amount ELSE 0 END) AS sold_sol,
+                    SUM(CASE WHEN pt.tx_type = 'buy' THEN pt.token_amount ELSE 0 END) AS bought_tokens,
+                    SUM(CASE WHEN pt.tx_type = 'sell' THEN pt.token_amount ELSE 0 END) AS sold_tokens,
+                    COUNT(*) AS txn_count,
+                    COUNT(*) FILTER (WHERE pt.tx_type = 'buy') AS buy_count,
+                    COUNT(*) FILTER (WHERE pt.tx_type = 'sell') AS sell_count
+                FROM period_txns pt
+                GROUP BY pt.wallet_id, pt.token_id
+            ),
+            wallet_stats AS (
+                SELECT
+                    wts.wallet_id,
+                    SUM(wts.txn_count) AS total_trades,
+                    SUM(wts.bought_sol) AS total_invested,
+                    SUM(wts.sold_sol) AS total_realized,
+                    SUM(wts.sold_sol - wts.bought_sol) AS total_pnl,
+                    MAX(wts.sold_sol - wts.bought_sol) AS best_trade,
+                    MIN(wts.sold_sol - wts.bought_sol) AS worst_trade,
+                    COUNT(DISTINCT wts.token_id) AS tokens_traded,
+
+                    -- Win rate: tokens con ciclo completo (buy+sell) donde ganó
+                    CASE
+                        WHEN COUNT(*) FILTER (WHERE wts.buy_count > 0 AND wts.sell_count > 0) > 0
+                        THEN ROUND(
+                            COUNT(*) FILTER (WHERE wts.buy_count > 0 AND wts.sell_count > 0 AND wts.sold_sol > wts.bought_sol)::numeric
+                            / COUNT(*) FILTER (WHERE wts.buy_count > 0 AND wts.sell_count > 0)::numeric
+                            * 100, 2)
+                        ELSE 0
+                    END AS real_win_rate,
+
+                    -- ROI
+                    CASE
+                        WHEN SUM(wts.bought_sol) > 0
+                        THEN ROUND((SUM(wts.sold_sol - wts.bought_sol) / SUM(wts.bought_sol) * 100)::numeric, 2)
+                        ELSE 0
+                    END AS roi_percentage
+                FROM wallet_token_stats wts
+                GROUP BY wts.wallet_id
+            )
+            SELECT
+                w.wallet_address,
+                ws.total_trades::integer,
+                ws.total_pnl AS total_profit_loss,
+                ws.total_invested,
+                ws.total_realized,
+                ws.real_win_rate,
+                CASE WHEN ws.tokens_traded > 0
+                    THEN ROUND((ws.total_pnl / ws.tokens_traded)::numeric, 4)
+                    ELSE 0
+                END AS avg_profit_per_trade,
+                ws.best_trade,
+                ws.worst_trade,
+                w.first_seen,
+                w.last_seen,
+                w.is_active,
+                w.tags,
+                ws.roi_percentage,
+                0 AS open_positions,
+                0 AS total_unrealized_pnl,
+                ws.tokens_traded
+
+            FROM wallet_stats ws
+            JOIN wallets w ON ws.wallet_id = w.wallet_id
+            WHERE ws.total_trades >= %s
+            ORDER BY {sort_col} {order_dir} NULLS LAST
+            LIMIT %s
+            """
+            cursor.execute(query, (min_trades, limit))
+
         rows = cursor.fetchall()
 
         traders = []
@@ -253,19 +260,21 @@ def get_top_traders():
             traders.append({
                 'wallet_address': row['wallet_address'],
                 'total_trades': int(row['total_trades'] or 0),
-                'total_pnl': float(row['total_pnl'] or 0),
+                'total_pnl': float(row['total_profit_loss'] or 0),
                 'total_invested': float(row['total_invested'] or 0),
                 'total_realized': float(row['total_realized'] or 0),
-                'win_rate': float(row['win_rate'] or 0),
+                'win_rate': float(row['real_win_rate'] or 0),
+                'avg_profit_per_trade': float(row['avg_profit_per_trade'] or 0),
                 'best_trade': float(row['best_trade'] or 0),
                 'worst_trade': float(row['worst_trade'] or 0),
                 'roi_percentage': float(row['roi_percentage'] or 0),
-                'open_positions': int(row.get('open_positions') or 0),
-                'tokens_traded': int(row.get('tokens_traded') or 0),
-                'tags': row.get('tags') or '',
-                'is_active': row.get('is_active'),
-                'first_seen': row['first_seen'].isoformat() if row.get('first_seen') else None,
-                'last_seen': row['last_seen'].isoformat() if row.get('last_seen') else None,
+                'open_positions': int(row['open_positions'] or 0),
+                'unrealized_pnl': float(row['total_unrealized_pnl'] or 0),
+                'tokens_traded': int(row['tokens_traded'] or 0),
+                'tags': row['tags'] or '',
+                'is_active': row['is_active'],
+                'first_seen': row['first_seen'].isoformat() if row['first_seen'] else None,
+                'last_seen': row['last_seen'].isoformat() if row['last_seen'] else None,
                 'last_activity': activity_str,
             })
 
@@ -277,24 +286,25 @@ def get_top_traders():
         })
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
         cursor.close()
         conn.close()
 
 
+# ═══════════════════════════════════════
+# ENDPOINT: Trader Detail
+# ═══════════════════════════════════════
+
 @app.route('/api/trader/<wallet_address>', methods=['GET'])
 def get_trader_detail(wallet_address):
-    """Detalle de un trader con sus posiciones"""
     conn = get_db()
     cursor = conn.cursor()
-
     try:
-        cursor.execute("""
-            SELECT * FROM wallets WHERE wallet_address = %s
-        """, (wallet_address,))
+        cursor.execute("SELECT * FROM wallets WHERE wallet_address = %s", (wallet_address,))
         wallet = cursor.fetchone()
-
         if not wallet:
             return jsonify({'success': False, 'error': 'Wallet not found'}), 404
 
@@ -317,7 +327,6 @@ def get_trader_detail(wallet_address):
             'wallet': dict(wallet),
             'positions': [dict(p) for p in positions]
         })
-
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
@@ -326,7 +335,7 @@ def get_trader_detail(wallet_address):
 
 
 # ═══════════════════════════════════════
-# ENDPOINT: Tokens — FIX: mostrar mint abreviada
+# ENDPOINT: Tokens (with price fixes)
 # ═══════════════════════════════════════
 
 @app.route('/api/tokens', methods=['GET'])
@@ -424,10 +433,15 @@ def get_tokens():
         for row in rows:
             created = row['created_at']
 
-            # FIX: Si no hay name/symbol, mostrar mint abreviada
+            # ── FIX: Token name/symbol — if NULL, use abbreviated mint ──
             mint = row['mint_address']
-            display_name = row['name'] if row['name'] else f"{mint[:4]}...{mint[-4:]}"
-            display_symbol = row['symbol'] if row['symbol'] else f"{mint[:6]}...{mint[-4:]}"
+            display_name = row['name']
+            display_symbol = row['symbol']
+
+            if not display_name or display_name in ('???', 'Unknown', ''):
+                display_name = mint[:6] + '...' + mint[-4:]
+            if not display_symbol or display_symbol in ('???', ''):
+                display_symbol = mint[:6] + '...' + mint[-4:]
 
             tokens.append({
                 'token_id': row['token_id'],
@@ -435,7 +449,7 @@ def get_tokens():
                 'name': display_name,
                 'symbol': display_symbol,
                 'image_url': row['image_url'],
-                'amm': row['amm'],
+                'amm': row['amm'] if row['amm'] != 'auto-discovered' else None,
                 'age': _format_age(created) if created else '??',
                 'created_at': created.isoformat() if created else None,
                 'price': float(row['current_price']) if row['current_price'] else 0,
@@ -511,9 +525,9 @@ def _format_age(dt):
 
 if __name__ == '__main__':
     port = 8200
-    print(f"\n🚀 API Server iniciando en http://localhost:{port}")
+    print(f"\n🚀 API Server v2 iniciando en http://localhost:{port}")
     print("📡 Endpoints:")
-    print("   GET /api/top-traders?time_range=24h  → Top traders filtrados por tiempo")
+    print("   GET /api/top-traders?time_range=24h  → Top traders (con filtro de tiempo)")
     print("   GET /api/trader/<wallet>             → Detalle de un trader")
     print("   GET /api/tokens                      → Lista de tokens")
     print("   GET /api/stats                       → Estadísticas generales\n")
