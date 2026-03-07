@@ -1,6 +1,5 @@
 // ══════════════════════════════════════════════════
-// app.js — Frontend con vista Top Traders + Tokens
-// v2.1: Filtro de tiempo, tokens con mint abreviada, win_rate fix
+// app.js v2 — Top Traders + Tokens + Time Filters
 // ══════════════════════════════════════════════════
 
 const API_BASE = '/api';
@@ -8,14 +7,14 @@ const API_BASE = '/api';
 let currentView = 'traders';
 let currentSort = 'pnl';
 let currentOrder = 'desc';
-let currentTimeRange = 'all';   // ← NUEVO: filtro de tiempo
+let currentTimeRange = 'all';
 let searchTerm = '';
 let allData = [];
 
 const REFRESH_INTERVAL = 15000;
 
 // ═══════════════════════════════════
-// Configuración de filtros por vista
+// View Configuration
 // ═══════════════════════════════════
 
 const VIEW_CONFIG = {
@@ -28,7 +27,6 @@ const VIEW_CONFIG = {
             { label: '💎 Invested', sort: 'invested' },
             { label: '🏆 Best Trade', sort: 'best_trade' },
         ],
-        // NUEVO: Filtros de tiempo
         timeFilters: [
             { label: '1H', value: '1h' },
             { label: '6H', value: '6h' },
@@ -83,7 +81,7 @@ const VIEW_CONFIG = {
 };
 
 // ═══════════════════════════════════
-// Formateo
+// Formatting
 // ═══════════════════════════════════
 
 function formatSOL(val) {
@@ -95,7 +93,15 @@ function formatSOL(val) {
 
 function formatPrice(price) {
     if (!price || price === 0) return '$0';
-    if (price < 0.00001) return '$' + price.toFixed(8);
+    // FIX: Handle very small prices with subscript notation
+    if (price < 0.0000001) {
+        const exp = Math.floor(Math.log10(price));
+        const mantissa = price / Math.pow(10, exp);
+        const zeros = Math.abs(exp) - 1;
+        const significant = mantissa.toFixed(2);
+        return `$0.0<sub>${zeros}</sub>${significant.replace('0.', '').replace('.', '')}`;
+    }
+    if (price < 0.00001) return '$' + price.toFixed(10);
     if (price < 0.001) return '$' + price.toFixed(6);
     if (price < 1) return '$' + price.toFixed(4);
     return '$' + price.toLocaleString('en-US', {maximumFractionDigits: 2});
@@ -168,7 +174,7 @@ function renderTags(tags) {
 }
 
 // ═══════════════════════════════════
-// Fetch de datos
+// Data Fetching
 // ═══════════════════════════════════
 
 async function fetchData() {
@@ -279,7 +285,7 @@ function renderTraders(traders) {
 }
 
 // ═══════════════════════════════════
-// Render: Tokens — FIX: mint abreviada
+// Render: Tokens
 // ═══════════════════════════════════
 
 function renderTokens(tokens) {
@@ -310,13 +316,9 @@ function renderTokens(tokens) {
             ? `<span class="badge badge-amm">${t.amm}</span>`
             : '';
 
-        // FIX: Mostrar symbol/name o mint abreviada
-        const displaySymbol = (t.symbol && t.symbol !== '???' && t.symbol !== 'Unknown')
-            ? t.symbol
-            : `${t.mint_address.slice(0, 6)}...${t.mint_address.slice(-4)}`;
-        const displayName = (t.name && t.name !== '???' && t.name !== 'Unknown')
-            ? t.name
-            : `${t.mint_address.slice(0, 8)}...${t.mint_address.slice(-6)}`;
+        // FIX: Use abbreviated mint if symbol looks like an address
+        let displaySymbol = t.symbol || '???';
+        let displayName = t.name || 'Unknown';
 
         return `
         <tr onclick="window.open('https://dexscreener.com/solana/${t.mint_address}','_blank')" title="${t.mint_address}">
@@ -346,7 +348,7 @@ function renderTokens(tokens) {
 }
 
 // ═══════════════════════════════════
-// UI: Cambio de vista y filtros
+// UI: View switching & filters
 // ═══════════════════════════════════
 
 function switchView(view) {
@@ -364,22 +366,22 @@ function switchView(view) {
             ⏳ Cargando datos...
         </td></tr>`;
 
-    // Botones de vista
+    // Update view buttons
     document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
     document.querySelector(`.view-btn[data-view="${view}"]`).classList.add('active');
 
-    // Headers
+    // Update headers
     document.getElementById('tableHead').innerHTML = config.headers;
 
-    // Sub-filtros: sort buttons + time filter buttons
+    // Build sub-filters
     const subfilters = document.getElementById('subfilters');
     let filtersHTML = config.filters.map((f, i) =>
-        `<button class="filter-btn ${i === 0 ? 'active' : ''}" data-sort="${f.sort}">${f.label}</button>`
+        `<button class="filter-btn sort-filter ${i === 0 ? 'active' : ''}" data-sort="${f.sort}">${f.label}</button>`
     ).join('');
 
-    // Agregar time range filters si existen (solo para traders)
+    // Add time filter buttons (only for traders)
     if (config.timeFilters && config.timeFilters.length > 0) {
-        filtersHTML += '<span style="border-left:1px solid #2a2d35;margin:0 6px;"></span>';
+        filtersHTML += '<span style="border-left:1px solid #2a2d35; height:20px; margin:0 8px; align-self:center;"></span>';
         filtersHTML += config.timeFilters.map(tf =>
             `<button class="filter-btn time-filter ${tf.value === 'all' ? 'active' : ''}" data-time="${tf.value}">${tf.label}</button>`
         ).join('');
@@ -387,10 +389,10 @@ function switchView(view) {
 
     subfilters.innerHTML = filtersHTML;
 
-    // Event listeners para sort filters
-    subfilters.querySelectorAll('.filter-btn:not(.time-filter)').forEach(btn => {
+    // Sort filter click handlers
+    subfilters.querySelectorAll('.sort-filter').forEach(btn => {
         btn.addEventListener('click', () => {
-            subfilters.querySelectorAll('.filter-btn:not(.time-filter)').forEach(b => b.classList.remove('active'));
+            subfilters.querySelectorAll('.sort-filter').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             const newSort = btn.dataset.sort;
             if (newSort === currentSort) {
@@ -403,7 +405,7 @@ function switchView(view) {
         });
     });
 
-    // Event listeners para TIME filters
+    // Time filter click handlers
     subfilters.querySelectorAll('.time-filter').forEach(btn => {
         btn.addEventListener('click', () => {
             subfilters.querySelectorAll('.time-filter').forEach(b => b.classList.remove('active'));
@@ -450,7 +452,7 @@ document.getElementById('searchBox').addEventListener('input', (e) => {
 });
 
 // ═══════════════════════════════════
-// Inicio
+// Init — Top Traders first
 // ═══════════════════════════════════
 
 switchView('traders');
@@ -459,4 +461,4 @@ fetchStats();
 setInterval(fetchData, REFRESH_INTERVAL);
 setInterval(fetchStats, 60000);
 
-console.log('🦎 Memecoin Screener v2.1 — Top Traders + Tokens + Time Filters');
+console.log('🦎 Memecoin Screener v2 — Top Traders + Tokens + Time Filters');
