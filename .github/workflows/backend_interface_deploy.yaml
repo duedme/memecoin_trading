@@ -1,0 +1,39 @@
+name: Memecoin's Backend Interface Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - interface/backend/**
+  workflow_dispatch:
+    inputs:
+      path:
+        description: "Path to deploy"
+        required: true
+        default: "interface/backend/**"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Tailscale Login
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: ${{ vars.TS_CI_TAG }}
+
+      - name: SCP to Node
+        working-directory: interface/backend
+        env:
+          NODE_IP: ${{ secrets.NODE_IP }}
+          NODE_USERNAME: ${{ vars.NODE_USERNAME }}
+        run: |
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o User=$NODE_USERNAME"
+          ssh $SSH_OPTS $NODE_IP "sudo systemctl stop memecoin-interface.service"
+          scp $SSH_OPTS -pr * $NODE_IP:/home/rebelforce/scripts/memecoin_page/
+          ssh $SSH_OPTS $NODE_IP "sudo systemctl start memecoin-interface.service"
