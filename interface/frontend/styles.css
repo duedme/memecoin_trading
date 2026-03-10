@@ -1,3 +1,7 @@
+/* ═══════════════════════════════════════
+   Memecoin Screener v3 — Complete Styles
+   ═══════════════════════════════════════ */
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
@@ -26,7 +30,7 @@ body {
     overflow-x: auto;
 }
 
-/* ── Top Bar ── */
+/* Top Bar */
 .topbar {
     display: flex; align-items: center; gap: 10px;
     padding: 10px 16px; background: var(--bg-secondary);
@@ -38,11 +42,10 @@ body {
 }
 .topbar .logo span { color: var(--green); }
 
-/* ── View Switcher (Top Traders / Tokens) ── */
+/* View Switcher */
 .view-switcher {
-    display: flex; gap: 4px;
-    background: var(--bg-primary); border-radius: 10px;
-    padding: 3px; border: 1px solid var(--border);
+    display: flex; gap: 4px; background: var(--bg-primary);
+    border-radius: 10px; padding: 3px; border: 1px solid var(--border);
 }
 .view-btn {
     padding: 8px 18px; border-radius: 8px; border: none;
@@ -53,15 +56,14 @@ body {
 .view-btn:hover { color: #fff; background: #1a1e24; }
 .view-btn.active[data-view="traders"] {
     background: linear-gradient(135deg, #f0a500, #ff6b00);
-    color: #000; font-weight: 700;
-    box-shadow: 0 0 12px rgba(240, 165, 0, 0.3);
+    color: #000; font-weight: 700; box-shadow: 0 0 12px rgba(240, 165, 0, 0.3);
 }
 .view-btn.active[data-view="tokens"] {
     background: var(--green); color: #000; font-weight: 700;
     box-shadow: 0 0 12px rgba(46, 213, 115, 0.2);
 }
 
-/* ── Sub-filters ── */
+/* Sub-filters */
 .subfilters {
     display: flex; gap: 6px; padding: 8px 16px;
     background: var(--bg-secondary); border-bottom: 1px solid var(--border);
@@ -77,7 +79,7 @@ body {
 .search-box {
     margin-left: auto; padding: 6px 12px; border-radius: 8px;
     border: 1px solid var(--border); background: var(--bg-primary);
-    color: var(--text-primary); width: 240px; font-size: 12px; outline: none;
+    color: var(--text-primary); width: 260px; font-size: 12px; outline: none;
 }
 .search-box::placeholder { color: var(--text-muted); }
 .search-box:focus { border-color: var(--accent-blue); }
@@ -88,7 +90,7 @@ body {
     background: var(--bg-primary); border-radius: 4px; border: 1px solid var(--border);
 }
 
-/* ── Table ── */
+/* Table */
 .table-container { overflow-x: auto; }
 table { width: 100%; min-width: 1200px; border-collapse: collapse; }
 thead th {
@@ -100,18 +102,12 @@ thead th {
 }
 thead th:first-child { text-align: left; padding-left: 16px; }
 thead th:hover { color: var(--text-secondary); }
-tbody tr {
-    border-bottom: 1px solid var(--border);
-    transition: background .12s; cursor: pointer;
-}
+tbody tr { border-bottom: 1px solid var(--border); transition: background .12s; cursor: pointer; }
 tbody tr:hover { background: var(--bg-row-hover); }
-td {
-    padding: 12px; text-align: right; white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-}
+td { padding: 12px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 td:first-child { text-align: left; padding-left: 16px; }
 
-/* ── Token Cell ── */
+/* Token Cell */
 .token-cell { display: flex; align-items: center; gap: 10px; }
 .token-rank { color: var(--text-muted); font-size: 11px; min-width: 24px; }
 .token-icon {
@@ -127,11 +123,9 @@ td:first-child { text-align: left; padding-left: 16px; }
 .badge { padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; }
 .badge-amm { background: var(--green-dim); color: var(--green); }
 
-/* ── Trader Cell ── */
+/* Trader Cell */
 .trader-cell { display: flex; align-items: center; gap: 10px; }
-.trader-rank {
-    font-size: 13px; font-weight: 700; min-width: 28px; text-align: center;
-}
+.trader-rank { font-size: 13px; font-weight: 700; min-width: 28px; text-align: center; }
 .trader-rank.gold { color: #f0a500; }
 .trader-rank.silver { color: #c0c0c0; }
 .trader-rank.bronze { color: #cd7f32; }
@@ -155,7 +149,7 @@ td:first-child { text-align: left; padding-left: 16px; }
 .tag-bot { background: #3a1e3a; color: #c084fc; }
 .tag-insider { background: #3a2e1e; color: var(--yellow); }
 
-/* ── Values ── */
+/* Values */
 .price { color: var(--text-primary); font-weight: 500; }
 .age { color: var(--text-secondary); }
 .positive { color: var(--green); }
@@ -163,23 +157,19 @@ td:first-child { text-align: left; padding-left: 16px; }
 .neutral { color: var(--text-muted); }
 .pnl-positive { color: var(--green); font-weight: 600; }
 .pnl-negative { color: var(--red); font-weight: 600; }
-.pnl-big {
-    padding: 2px 6px; border-radius: 4px; font-weight: 700;
-}
+.pnl-big { padding: 2px 6px; border-radius: 4px; font-weight: 700; }
 .pnl-big.positive { background: var(--green-dim); color: var(--green); }
 .pnl-big.negative { background: var(--red-dim); color: var(--red); }
 
-/* ── Win Rate Bar ── */
+/* Win Rate Bar */
 .winrate-container { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
-.winrate-bar {
-    width: 50px; height: 6px; background: #1c2028; border-radius: 3px; overflow: hidden;
-}
+.winrate-bar { width: 50px; height: 6px; background: #1c2028; border-radius: 3px; overflow: hidden; }
 .winrate-fill { height: 100%; border-radius: 3px; transition: width .3s; }
 .winrate-high { background: var(--green); }
 .winrate-mid { background: var(--yellow); }
 .winrate-low { background: var(--red); }
 
-/* ── Status Bar ── */
+/* Status Bar */
 .status-bar {
     display: flex; align-items: center; justify-content: space-between;
     padding: 8px 16px; background: var(--bg-secondary);
@@ -192,7 +182,67 @@ td:first-child { text-align: left; padding-left: 16px; }
 .status-dot.connected { background: var(--green); }
 .status-dot.error { background: var(--red); }
 
-/* ── Scrollbar ── */
+/* ═══════════════════════════════════════
+   Investor Classification Styles
+   ═══════════════════════════════════════ */
+
+/* Investor Cell in tokens table */
+.investors-cell {
+    display: flex; flex-direction: column; align-items: flex-end;
+    gap: 2px; min-width: 80px;
+}
+.inv-count { font-weight: 700; font-size: 13px; color: var(--text-primary); }
+.inv-badges { display: flex; gap: 3px; flex-wrap: wrap; justify-content: flex-end; }
+.inv-badge {
+    padding: 1px 4px; border-radius: 3px; font-size: 9px;
+    font-weight: 700; white-space: nowrap;
+}
+.inv-elite { background: #1a3a1e; color: #2ed573; }
+.inv-profitable { background: #1e2a3a; color: #60a5fa; }
+.inv-regular { background: #2a2d35; color: #8b8d93; }
+.inv-bot-profit { background: #3a2e1e; color: #ffc312; }
+.inv-bot { background: #3a1e3a; color: #c084fc; }
+.inv-casual { background: #1c2028; color: #5c5e64; }
+.inv-losing { background: #3a1e1e; color: #ff4757; }
+
+/* Human vs Bot bar */
+.inv-bar {
+    width: 50px; height: 4px; background: #3a1e3a;
+    border-radius: 2px; overflow: hidden;
+}
+.inv-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
+.inv-quality-high .inv-bar-fill { background: var(--green); }
+.inv-quality-mid .inv-bar-fill { background: var(--yellow); }
+.inv-quality-low .inv-bar-fill { background: var(--red); }
+
+/* Score badge in traders */
+.inv-score {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 22px; height: 16px; padding: 0 4px; border-radius: 8px;
+    font-size: 9px; font-weight: 700;
+    background: linear-gradient(135deg, #f0a500, #ff6b00);
+    color: #000; margin-left: 4px;
+}
+
+/* Score cell in traders table */
+.inv-score-cell {
+    font-weight: 700; font-size: 13px; padding: 2px 8px;
+    border-radius: 6px; display: inline-block;
+}
+.inv-score-high { background: var(--green-dim); color: var(--green); }
+.inv-score-mid { background: #2a2d1e; color: var(--yellow); }
+.inv-score-low { background: var(--red-dim); color: var(--red); }
+
+/* Trader classification tags */
+.tag.inv-elite { background: #1a3a1e; color: #2ed573; border: 1px solid #2ed57340; }
+.tag.inv-profitable { background: #1e2a3a; color: #60a5fa; border: 1px solid #60a5fa40; }
+.tag.inv-regular { background: #2a2d35; color: #e1e3e6; }
+.tag.inv-bot-profit { background: #3a2e1e; color: #ffc312; border: 1px solid #ffc31240; }
+.tag.inv-bot { background: #3a1e3a; color: #c084fc; border: 1px solid #c084fc40; }
+.tag.inv-casual { background: #1c2028; color: #5c5e64; }
+.tag.inv-losing { background: #3a1e1e; color: #ff4757; border: 1px solid #ff475740; }
+
+/* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
 ::-webkit-scrollbar-thumb { background: #2a2d35; border-radius: 3px; }

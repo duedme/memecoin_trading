@@ -10,28 +10,25 @@
 <body>
     <!-- Top Bar -->
     <div class="topbar">
-        <div class="logo">🦎 <span>Memecoin</span>Screener</div>
+        <div class="logo">🔍 <span>Memecoin</span>Screener</div>
 
-        <!-- View Switcher: Top Traders primero y resaltado -->
+        <!-- View Switcher -->
         <div class="view-switcher">
-            <button class="view-btn active" data-view="traders" id="btnTraders">
-                🏆 Top Traders
-            </button>
-            <button class="view-btn" data-view="tokens" id="btnTokens">
-                🪙 Tokens
-            </button>
+            <button class="view-btn active" data-view="traders" id="btnTraders">👑 Top Traders</button>
+            <button class="view-btn" data-view="tokens" id="btnTokens">🪙 Tokens</button>
         </div>
 
-        <input type="text" class="search-box" id="searchBox" placeholder="🔍 Buscar...">
+        <input type="text" class="search-box" id="searchBox" placeholder="Buscar...">
 
         <div class="stats-bar" id="statsBar">
             <span class="stat-item" id="statTokens">— tokens</span>
             <span class="stat-item" id="statWallets">— wallets</span>
             <span class="stat-item" id="statTxns">— txns/24h</span>
+            <span class="stat-item" id="statClassifications">— classified</span>
         </div>
     </div>
 
-    <!-- Sub-filters (cambian según la vista activa) -->
+    <!-- Sub-filters -->
     <div class="subfilters" id="subfilters">
         <!-- Se llenan dinámicamente desde JS -->
     </div>
@@ -44,8 +41,8 @@
             </thead>
             <tbody id="tableBody">
                 <tr>
-                    <td colspan="12" style="text-align:center; padding:40px; color:#5c5e64;">
-                        ⏳ Cargando datos...
+                    <td colspan="13" style="text-align:center; padding:40px; color:#5c5e64">
+                        Cargando datos...
                     </td>
                 </tr>
             </tbody>
