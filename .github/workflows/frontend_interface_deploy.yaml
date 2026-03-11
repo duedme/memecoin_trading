@@ -41,4 +41,5 @@ jobs:
           NODE_IP: ${{ secrets.NODE_IP }}
           NODE_USERNAME: ${{ vars.NODE_USERNAME }}
         run: |
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o User=$NODE_USERNAME"
           ssh $SSH_OPTS $NODE_IP "cd /home/rebelforce/scripts/memecoin_trading/ && git pull origin main"
