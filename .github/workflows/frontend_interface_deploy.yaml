@@ -41,5 +41,4 @@ jobs:
           NODE_IP: ${{ secrets.NODE_IP }}
           NODE_USERNAME: ${{ vars.NODE_USERNAME }}
         run: |
-          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o User=$NODE_USERNAME -pr * $NODE_USERNAME@$NODE_IP:/home/rebelforce/scripts/memecoin_page/
           ssh $SSH_OPTS $NODE_IP "cd /home/rebelforce/scripts/memecoin_trading/ && git pull origin main"
