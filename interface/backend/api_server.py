@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 api_server.py v3
-API REST — Tokens + Top Traders + Clasificación de Inversores
+API REST — Tokens + Top Traders con clasificación de inversores
 """
 
 from flask import Flask, jsonify, request
@@ -33,6 +33,10 @@ def get_db():
     )
 
 
+# ═══════════════════════════════════════
+# Helper: time intervals
+# ═══════════════════════════════════════
+
 TIME_RANGE_MAP = {
     '1h':  '1 hour',
     '6h':  '6 hours',
@@ -49,8 +53,13 @@ TIME_RANGE_MAP = {
 @app.route('/api/top-traders', methods=['GET'])
 def get_top_traders():
     """
-    Top traders ordenados por P&L, win rate, ROI, etc.
-    Incluye clasificación de inversor si está disponible.
+    Top traders ordenados por P&L, win rate, ROI, score, etc.
+    Query params:
+      - sort: pnl, win_rate, roi, trades, invested, best_trade, score
+      - order: asc/desc
+      - limit: max results (default 50, max 200)
+      - min_trades: minimum trades to appear (default 3)
+      - time_range: 1h, 6h, 24h, 7d, 30d, all (default: all)
     """
     sort_field = request.args.get('sort', 'pnl')
     order = request.args.get('order', 'desc').upper()
@@ -64,6 +73,9 @@ def get_top_traders():
     cursor = conn.cursor()
 
     try:
+        # ──────────────────────────────────────
+        # MODE: ALL (use pre-calculated wallets table)
+        # ──────────────────────────────────────
         if time_range == 'all' or time_range not in TIME_RANGE_MAP:
             sort_map = {
                 'pnl': 'w.total_profit_loss',
@@ -93,11 +105,13 @@ def get_top_traders():
                 w.is_active,
                 w.tags,
 
+                -- ROI
                 CASE WHEN w.total_invested > 0
                     THEN ROUND((w.total_profit_loss / w.total_invested * 100)::numeric, 2)
                     ELSE 0
                 END AS roi_percentage,
 
+                -- Win rate RECALCULADO: solo posiciones cerradas
                 COALESCE((
                     SELECT CASE WHEN COUNT(*) > 0
                         THEN ROUND(
@@ -108,6 +122,7 @@ def get_top_traders():
                     WHERE wp2.wallet_id = w.wallet_id AND wp2.status = 'closed'
                 ), 0) AS real_win_rate,
 
+                -- Posiciones abiertas
                 (SELECT COUNT(*)
                  FROM wallet_positions wp
                  WHERE wp.wallet_id = w.wallet_id
@@ -115,35 +130,37 @@ def get_top_traders():
                    AND wp.current_balance > 0
                 ) AS open_positions,
 
+                -- Total unrealized
                 (SELECT COALESCE(SUM(wp.unrealized_pnl), 0)
                  FROM wallet_positions wp
                  WHERE wp.wallet_id = w.wallet_id
                 ) AS total_unrealized_pnl,
 
+                -- Tokens traded
                 (SELECT COUNT(DISTINCT wp.token_id)
                  FROM wallet_positions wp
                  WHERE wp.wallet_id = w.wallet_id
                 ) AS tokens_traded,
 
-                -- Clasificación del inversor
+                -- ═══ CLASIFICACIÓN ═══
                 wc.behavior_type,
                 wc.consistency_level,
                 wc.profit_tier,
                 wc.investor_type,
                 wc.investor_score,
-                wc.investor_label,
-                wc.avg_daily_trades AS classification_avg_daily_trades,
-                wc.active_days_last_week AS classification_active_days,
-                wc.avg_daily_pnl_usd AS classification_avg_daily_pnl_usd
+                wc.investor_label
 
             FROM wallets w
-            LEFT JOIN wallet_classifications wc ON wc.wallet_id = w.wallet_id
+            LEFT JOIN wallet_classifications wc ON w.wallet_id = wc.wallet_id
             WHERE w.total_trades >= %s
             ORDER BY {sort_col} {order_dir} NULLS LAST
             LIMIT %s
             """
             cursor.execute(query, (min_trades, limit))
 
+        # ──────────────────────────────────────
+        # MODE: TIME-FILTERED (calculate on-the-fly)
+        # ──────────────────────────────────────
         else:
             interval = TIME_RANGE_MAP[time_range]
 
@@ -161,14 +178,19 @@ def get_top_traders():
             query = f"""
             WITH period_txns AS (
                 SELECT
-                    wt.wallet_id, wt.token_id, wt.tx_type,
-                    wt.token_amount, wt.sol_amount, wt.price
+                    wt.wallet_id,
+                    wt.token_id,
+                    wt.tx_type,
+                    wt.token_amount,
+                    wt.sol_amount,
+                    wt.price
                 FROM wallet_transactions wt
                 WHERE wt.time >= NOW() - INTERVAL '{interval}'
             ),
             wallet_token_stats AS (
                 SELECT
-                    pt.wallet_id, pt.token_id,
+                    pt.wallet_id,
+                    pt.token_id,
                     SUM(CASE WHEN pt.tx_type = 'buy' THEN pt.sol_amount ELSE 0 END) AS bought_sol,
                     SUM(CASE WHEN pt.tx_type = 'sell' THEN pt.sol_amount ELSE 0 END) AS sold_sol,
                     SUM(CASE WHEN pt.tx_type = 'buy' THEN pt.token_amount ELSE 0 END) AS bought_tokens,
@@ -189,6 +211,8 @@ def get_top_traders():
                     MAX(wts.sold_sol - wts.bought_sol) AS best_trade,
                     MIN(wts.sold_sol - wts.bought_sol) AS worst_trade,
                     COUNT(DISTINCT wts.token_id) AS tokens_traded,
+
+                    -- Win rate: tokens con ciclo completo (buy+sell) donde ganó
                     CASE
                         WHEN COUNT(*) FILTER (WHERE wts.buy_count > 0 AND wts.sell_count > 0) > 0
                         THEN ROUND(
@@ -197,6 +221,8 @@ def get_top_traders():
                             * 100, 2)
                         ELSE 0
                     END AS real_win_rate,
+
+                    -- ROI
                     CASE
                         WHEN SUM(wts.bought_sol) > 0
                         THEN ROUND((SUM(wts.sold_sol - wts.bought_sol) / SUM(wts.bought_sol) * 100)::numeric, 2)
@@ -226,20 +252,18 @@ def get_top_traders():
                 0 AS open_positions,
                 0 AS total_unrealized_pnl,
                 ws.tokens_traded,
-                -- Clasificación
+
+                -- ═══ CLASIFICACIÓN ═══
                 wc.behavior_type,
                 wc.consistency_level,
                 wc.profit_tier,
                 wc.investor_type,
                 wc.investor_score,
-                wc.investor_label,
-                wc.avg_daily_trades AS classification_avg_daily_trades,
-                wc.active_days_last_week AS classification_active_days,
-                wc.avg_daily_pnl_usd AS classification_avg_daily_pnl_usd
+                wc.investor_label
 
             FROM wallet_stats ws
             JOIN wallets w ON ws.wallet_id = w.wallet_id
-            LEFT JOIN wallet_classifications wc ON wc.wallet_id = w.wallet_id
+            LEFT JOIN wallet_classifications wc ON w.wallet_id = wc.wallet_id
             WHERE ws.total_trades >= %s
             ORDER BY {sort_col} {order_dir} NULLS LAST
             LIMIT %s
@@ -253,7 +277,19 @@ def get_top_traders():
             last_seen = row['last_seen']
             activity_str = _format_age(last_seen) if last_seen else '??'
 
-            trader = {
+            # Construcción del objeto classification
+            classification = None
+            if row.get('behavior_type'):
+                classification = {
+                    'behavior': row['behavior_type'],
+                    'consistency': row['consistency_level'],
+                    'profit_tier': row['profit_tier'],
+                    'investor_type': row['investor_type'],
+                    'investor_score': int(row['investor_score'] or 0),
+                    'label': row['investor_label']
+                }
+
+            traders.append({
                 'wallet_address': row['wallet_address'],
                 'total_trades': int(row['total_trades'] or 0),
                 'total_pnl': float(row['total_profit_loss'] or 0),
@@ -272,24 +308,8 @@ def get_top_traders():
                 'first_seen': row['first_seen'].isoformat() if row['first_seen'] else None,
                 'last_seen': row['last_seen'].isoformat() if row['last_seen'] else None,
                 'last_activity': activity_str,
-                'classification': None,
-            }
-
-            # Agregar clasificación si existe
-            if row.get('investor_type'):
-                trader['classification'] = {
-                    'behavior': row['behavior_type'] or 'unknown',
-                    'consistency': row['consistency_level'] or 'unknown',
-                    'profit_tier': row['profit_tier'] or 'unknown',
-                    'investor_type': row['investor_type'] or 'unclassified',
-                    'investor_score': int(row['investor_score'] or 0),
-                    'label': row['investor_label'] or '',
-                    'avg_daily_trades': float(row['classification_avg_daily_trades'] or 0),
-                    'active_days': int(row['classification_active_days'] or 0),
-                    'avg_daily_pnl_usd': float(row['classification_avg_daily_pnl_usd'] or 0),
-                }
-
-            traders.append(trader)
+                'classification': classification
+            })
 
         return jsonify({
             'success': True,
@@ -308,7 +328,7 @@ def get_top_traders():
 
 
 # ═══════════════════════════════════════
-# ENDPOINT: Trader Detail
+# ENDPOINT: Trader Detail (con clasificación)
 # ═══════════════════════════════════════
 
 @app.route('/api/trader/<wallet_address>', methods=['GET'])
@@ -316,17 +336,26 @@ def get_trader_detail(wallet_address):
     conn = get_db()
     cursor = conn.cursor()
     try:
-        cursor.execute("SELECT * FROM wallets WHERE wallet_address = %s", (wallet_address,))
+        # Wallet info + clasificación
+        cursor.execute("""
+            SELECT 
+                w.*,
+                wc.behavior_type,
+                wc.consistency_level,
+                wc.profit_tier,
+                wc.investor_type,
+                wc.investor_score,
+                wc.investor_label
+            FROM wallets w
+            LEFT JOIN wallet_classifications wc ON w.wallet_id = wc.wallet_id
+            WHERE w.wallet_address = %s
+        """, (wallet_address,))
         wallet = cursor.fetchone()
+        
         if not wallet:
             return jsonify({'success': False, 'error': 'Wallet not found'}), 404
 
-        # Clasificación
-        cursor.execute("""
-            SELECT * FROM wallet_classifications WHERE wallet_id = %s
-        """, (wallet['wallet_id'],))
-        classification = cursor.fetchone()
-
+        # Posiciones
         cursor.execute("""
             SELECT
                 t.symbol, t.name, t.mint_address,
@@ -341,10 +370,24 @@ def get_trader_detail(wallet_address):
         """, (wallet['wallet_id'],))
         positions = cursor.fetchall()
 
+        # Construir classification object
+        classification = None
+        if wallet.get('behavior_type'):
+            classification = {
+                'behavior': wallet['behavior_type'],
+                'consistency': wallet['consistency_level'],
+                'profit_tier': wallet['profit_tier'],
+                'investor_type': wallet['investor_type'],
+                'investor_score': int(wallet['investor_score'] or 0),
+                'label': wallet['investor_label']
+            }
+
+        wallet_dict = dict(wallet)
+        wallet_dict['classification'] = classification
+
         return jsonify({
             'success': True,
-            'wallet': dict(wallet),
-            'classification': dict(classification) if classification else None,
+            'wallet': wallet_dict,
             'positions': [dict(p) for p in positions]
         })
     except Exception as e:
@@ -377,7 +420,7 @@ def get_tokens():
         'change_1h': 'pct_1h',
         'change_6h': 'pct_6h',
         'change_24h': 'pct_24h',
-        'investors': 'inv.total_classified_investors',
+        'investors': 'inv.total_investors',
     }
     sort_col = sort_map.get(sort_field, 'latest.volume_24h')
     order_dir = 'DESC' if order == 'DESC' else 'ASC'
@@ -431,20 +474,19 @@ def get_tokens():
         latest.market_cap, latest.fdv, latest.holders_count, latest.transactions_count,
         COALESCE(tc.txns_24h, latest.transactions_count, 0) AS txns,
         COALESCE(tc.makers_24h, latest.holders_count, 0) AS makers,
-
         CASE WHEN p5.price > 0  THEN ROUND(((latest.price - p5.price) / p5.price * 100)::numeric, 2)   ELSE NULL END AS pct_5m,
         CASE WHEN p1h.price > 0 THEN ROUND(((latest.price - p1h.price) / p1h.price * 100)::numeric, 2) ELSE NULL END AS pct_1h,
         CASE WHEN p6h.price > 0 THEN ROUND(((latest.price - p6h.price) / p6h.price * 100)::numeric, 2) ELSE NULL END AS pct_6h,
         CASE WHEN p24h.price > 0 THEN ROUND(((latest.price - p24h.price) / p24h.price * 100)::numeric, 2) ELSE NULL END AS pct_24h,
-
-        -- Investor breakdown
-        COALESCE(inv.total_classified_investors, 0) AS total_investors,
-        COALESCE(inv.elite_investors, 0) AS elite_investors,
-        COALESCE(inv.profitable_investors, 0) AS profitable_investors,
-        COALESCE(inv.regular_investors, 0) AS regular_investors,
-        COALESCE(inv.human_investors, 0) AS human_investors,
-        COALESCE(inv.bot_investors, 0) AS bot_investors,
-        COALESCE(inv.avg_investor_score, 0) AS avg_investor_score
+        
+        -- ═══ INVESTORS BREAKDOWN ═══
+        inv.total_investors,
+        inv.elite_count,
+        inv.profitable_count,
+        inv.regular_count,
+        inv.human_count,
+        inv.bot_count,
+        inv.avg_score
 
     FROM tokens t
     JOIN latest_metrics latest ON t.token_id = latest.token_id
@@ -454,20 +496,21 @@ def get_tokens():
     LEFT JOIN price_24h p24h ON t.token_id = p24h.token_id
     LEFT JOIN txn_counts tc ON t.token_id = tc.token_id
     LEFT JOIN LATERAL (
-        SELECT
-            COUNT(DISTINCT wc.wallet_id) AS total_classified_investors,
-            COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'elite') AS elite_investors,
-            COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'profitable') AS profitable_investors,
-            COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'regular') AS regular_investors,
-            COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.behavior_type = 'human') AS human_investors,
-            COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.behavior_type = 'bot') AS bot_investors,
-            ROUND(AVG(wc.investor_score)::numeric, 1) AS avg_investor_score
-        FROM wallet_positions wp2
-        JOIN wallet_classifications wc ON wc.wallet_id = wp2.wallet_id
-        WHERE wp2.token_id = t.token_id
-          AND wp2.status != 'closed'
-          AND wp2.current_balance > 0
+        SELECT 
+            COUNT(DISTINCT wc.wallet_id) AS total_investors,
+            COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'elite') AS elite_count,
+            COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'profitable') AS profitable_count,
+            COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'regular') AS regular_count,
+            COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.behavior_type = 'human') AS human_count,
+            COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.behavior_type = 'bot') AS bot_count,
+            ROUND(AVG(wc.investor_score)::numeric, 1) AS avg_score
+        FROM wallet_positions wp
+        JOIN wallet_classifications wc ON wc.wallet_id = wp.wallet_id
+        WHERE wp.token_id = t.token_id
+          AND wp.status != 'closed'
+          AND wp.current_balance > 0
     ) inv ON true
+    
     WHERE t.status = %s AND latest.price IS NOT NULL AND latest.price > 0
     ORDER BY {sort_col} {order_dir} NULLS LAST
     LIMIT %s
@@ -479,6 +522,8 @@ def get_tokens():
         tokens = []
         for row in rows:
             created = row['created_at']
+
+            # Fix: Token name/symbol — if NULL, use abbreviated mint
             mint = row['mint_address']
             display_name = row['name']
             display_symbol = row['symbol']
@@ -487,6 +532,17 @@ def get_tokens():
                 display_name = mint[:6] + '...' + mint[-4:]
             if not display_symbol or display_symbol in ('???', ''):
                 display_symbol = mint[:6] + '...' + mint[-4:]
+
+            # Investors object
+            investors = {
+                'total': int(row['total_investors'] or 0),
+                'elite': int(row['elite_count'] or 0),
+                'profitable': int(row['profitable_count'] or 0),
+                'regular': int(row['regular_count'] or 0),
+                'humans': int(row['human_count'] or 0),
+                'bots': int(row['bot_count'] or 0),
+                'avg_score': float(row['avg_score'] or 0)
+            }
 
             tokens.append({
                 'token_id': row['token_id'],
@@ -508,15 +564,7 @@ def get_tokens():
                 'pct_1h': float(row['pct_1h']) if row['pct_1h'] is not None else None,
                 'pct_6h': float(row['pct_6h']) if row['pct_6h'] is not None else None,
                 'pct_24h': float(row['pct_24h']) if row['pct_24h'] is not None else None,
-                'investors': {
-                    'total': int(row['total_investors'] or 0),
-                    'elite': int(row['elite_investors'] or 0),
-                    'profitable': int(row['profitable_investors'] or 0),
-                    'regular': int(row['regular_investors'] or 0),
-                    'humans': int(row['human_investors'] or 0),
-                    'bots': int(row['bot_investors'] or 0),
-                    'avg_score': float(row['avg_investor_score'] or 0),
-                },
+                'investors': investors
             })
         return jsonify({'success': True, 'count': len(tokens), 'tokens': tokens})
     except Exception as e:
@@ -529,7 +577,7 @@ def get_tokens():
 
 
 # ═══════════════════════════════════════
-# ENDPOINT: Stats
+# ENDPOINT: Stats (con clasificaciones)
 # ═══════════════════════════════════════
 
 @app.route('/api/stats', methods=['GET'])
@@ -539,35 +587,39 @@ def get_stats():
     try:
         cursor.execute("SELECT COUNT(*) AS total FROM tokens WHERE status = 'active'")
         total_tokens = cursor.fetchone()['total']
+        
         cursor.execute("SELECT COUNT(*) AS total FROM wallets WHERE is_active = TRUE")
         total_wallets = cursor.fetchone()['total']
+        
         cursor.execute("SELECT COUNT(*) AS total FROM wallet_transactions WHERE time >= NOW() - INTERVAL '24 hours'")
         txns_24h = cursor.fetchone()['total']
 
-        # Stats de clasificación
+        # Clasificaciones
         cursor.execute("""
-            SELECT
-                COUNT(*) AS total_classified,
+            SELECT 
+                COUNT(*) AS total,
                 COUNT(*) FILTER (WHERE behavior_type = 'human') AS humans,
                 COUNT(*) FILTER (WHERE behavior_type = 'bot') AS bots,
                 COUNT(*) FILTER (WHERE investor_type = 'elite') AS elite,
                 COUNT(*) FILTER (WHERE investor_type = 'profitable') AS profitable
             FROM wallet_classifications
         """)
-        class_stats = cursor.fetchone()
+        class_row = cursor.fetchone()
+
+        classifications = {
+            'total': class_row['total'],
+            'humans': class_row['humans'],
+            'bots': class_row['bots'],
+            'elite': class_row['elite'],
+            'profitable': class_row['profitable']
+        }
 
         return jsonify({
             'success': True,
             'total_tokens': total_tokens,
             'total_wallets': total_wallets,
             'transactions_24h': txns_24h,
-            'classifications': {
-                'total': class_stats['total_classified'] if class_stats else 0,
-                'humans': class_stats['humans'] if class_stats else 0,
-                'bots': class_stats['bots'] if class_stats else 0,
-                'elite': class_stats['elite'] if class_stats else 0,
-                'profitable': class_stats['profitable'] if class_stats else 0,
-            }
+            'classifications': classifications
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -577,7 +629,7 @@ def get_stats():
 
 
 # ═══════════════════════════════════════
-# ENDPOINT: Investor Types Summary
+# ENDPOINT: Investor Types
 # ═══════════════════════════════════════
 
 @app.route('/api/investor-types', methods=['GET'])
@@ -587,7 +639,7 @@ def get_investor_types():
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            SELECT
+            SELECT 
                 investor_type,
                 investor_label,
                 COUNT(*) as count,
@@ -600,6 +652,7 @@ def get_investor_types():
             ORDER BY AVG(investor_score) DESC
         """)
         rows = cursor.fetchall()
+
         types = []
         for row in rows:
             types.append({
@@ -611,6 +664,7 @@ def get_investor_types():
                 'avg_daily_trades': float(row['avg_daily_trades'] or 0),
                 'avg_active_days': float(row['avg_active_days'] or 0),
             })
+
         return jsonify(success=True, types=types)
     except Exception as e:
         return jsonify(success=False, error=str(e)), 500
@@ -620,28 +674,32 @@ def get_investor_types():
 
 
 # ═══════════════════════════════════════
-# ENDPOINT: Token Investors Detail
+# ENDPOINT: Token Investors
 # ═══════════════════════════════════════
 
-@app.route('/api/token/<mintaddress>/investors', methods=['GET'])
-def get_token_investors(mintaddress):
-    """Inversores activos en un token específico, desglosados por tipo."""
+@app.route('/api/token/<mint_address>/investors', methods=['GET'])
+def get_token_investors(mint_address):
+    """REQ5: Inversores activos en un token específico, desglosados por tipo."""
     conn = get_db()
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            SELECT
-                t.token_id, t.symbol, t.name,
+            SELECT 
+                t.token_id,
+                t.symbol,
+                t.name,
+                -- Conteos por tipo
                 COUNT(DISTINCT wc.wallet_id) AS total_investors,
                 COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'elite') AS elite,
                 COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'profitable') AS profitable,
                 COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'regular') AS regular,
                 COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'bot_profitable') AS bot_profitable,
                 COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'bot_regular') AS bot_regular,
-                COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'casual') AS casual,
                 COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.investor_type = 'losing') AS losing,
+                -- Bot vs Human
                 COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.behavior_type = 'human') AS humans,
                 COUNT(DISTINCT wc.wallet_id) FILTER (WHERE wc.behavior_type = 'bot') AS bots,
+                -- Score promedio
                 ROUND(AVG(wc.investor_score)::numeric, 1) AS avg_score
             FROM tokens t
             JOIN wallet_positions wp ON wp.token_id = t.token_id
@@ -650,13 +708,13 @@ def get_token_investors(mintaddress):
               AND wp.status != 'closed'
               AND wp.current_balance > 0
             GROUP BY t.token_id, t.symbol, t.name
-        """, (mintaddress,))
+        """, (mint_address,))
 
         row = cursor.fetchone()
         if not row:
             return jsonify(success=True, investors={
                 'total': 0, 'elite': 0, 'profitable': 0, 'regular': 0,
-                'bot_profitable': 0, 'bot_regular': 0, 'casual': 0, 'losing': 0,
+                'bot_profitable': 0, 'bot_regular': 0, 'losing': 0,
                 'humans': 0, 'bots': 0, 'avg_score': 0
             })
 
@@ -667,7 +725,6 @@ def get_token_investors(mintaddress):
             'regular': row['regular'],
             'bot_profitable': row['bot_profitable'],
             'bot_regular': row['bot_regular'],
-            'casual': row['casual'],
             'losing': row['losing'],
             'humans': row['humans'],
             'bots': row['bots'],
@@ -679,10 +736,6 @@ def get_token_investors(mintaddress):
         cursor.close()
         conn.close()
 
-
-# ═══════════════════════════════════════
-# Helper
-# ═══════════════════════════════════════
 
 def _format_age(dt):
     if not dt:
@@ -711,10 +764,10 @@ if __name__ == '__main__':
     port = 8200
     print(f"\n🚀 API Server v3 iniciando en http://localhost:{port}")
     print("📡 Endpoints:")
-    print("   GET /api/top-traders?time_range=24h  → Top traders (con clasificación)")
-    print("   GET /api/trader/<wallet>             → Detalle de un trader")
-    print("   GET /api/tokens                      → Lista de tokens (con investors)")
-    print("   GET /api/stats                       → Estadísticas generales")
-    print("   GET /api/investor-types              → Resumen de tipos de inversor")
-    print("   GET /api/token/<mint>/investors       → Inversores de un token\n")
+    print("   GET /api/top-traders?time_range=24h&sort=score  → Top traders con clasificación")
+    print("   GET /api/trader/<wallet>                        → Detalle de trader con clasificación")
+    print("   GET /api/tokens?sort=investors                  → Tokens con breakdown de inversores")
+    print("   GET /api/investor-types                         → Resumen de tipos de inversores")
+    print("   GET /api/token/<mint>/investors                 → Inversores de un token específico")
+    print("   GET /api/stats                                  → Stats con clasificaciones\n")
     app.run(host='0.0.0.0', port=port, debug=True)
