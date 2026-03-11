@@ -1,17 +1,17 @@
-name: Memecoin's Backend Interface Deploy
+name: Memecoin Detecting Interface Deploy
 
 on:
   push:
     branches:
       - main
     paths:
-      - interface/backend/**
+      - memecoin_detecting/**
   workflow_dispatch:
     inputs:
       path:
         description: "Path to deploy"
         required: true
-        default: "interface/backend/**"
+        default: "memecoin_detecting/**"
 
 jobs:
   deploy:
@@ -28,12 +28,10 @@ jobs:
           tags: ${{ vars.TS_CI_TAG }}
 
       - name: SCP to Node
-        working-directory: interface/backend
+        working-directory: memecoin_detecting
         env:
           NODE_IP: ${{ secrets.NODE_IP }}
           NODE_USERNAME: ${{ vars.NODE_USERNAME }}
         run: |
           SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o User=$NODE_USERNAME"
-          ssh $SSH_OPTS $NODE_IP "sudo systemctl stop memecoin-interface.service"
           ssh $SSH_OPTS $NODE_IP "cd /home/rebelforce/scripts/memecoin_trading/ && git pull origin main"
-          ssh $SSH_OPTS $NODE_IP "sudo systemctl start memecoin-interface.service"
