@@ -1,4 +1,4 @@
-name: Memecoin Detecting Interface Deploy
+name: Memecoin Detecting Deploy
 
 on:
   push:
