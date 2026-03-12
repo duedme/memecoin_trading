@@ -373,7 +373,7 @@ def get_tokens():
     status = request.args.get('status', 'active')
     
     sortmap = {
-        'volume': 'latest.volume_24h',
+        'volume': 'va.vol_24h',
         'mcap': 'latest.market_cap',
         'price': 'latest.price',
         'txns': 'latest.transactions_count',
@@ -395,11 +395,21 @@ def get_tokens():
     query = f"""
     WITH latest_metrics AS (
         SELECT DISTINCT ON (token_id)
-            token_id, time, price, liquidity, volume_1h, volume_24h, 
+            token_id, time, price, liquidity,
             market_cap, fdv, holders_count, transactions_count
         FROM token_metrics
         WHERE time >= NOW() - INTERVAL '30 minutes'
         ORDER BY token_id, time DESC
+    ),
+    volume_agg AS (
+        SELECT 
+            token_id,
+            COALESCE(SUM(volume_10m) FILTER (WHERE time >= NOW() - INTERVAL '1 hour'), 0) AS vol_1h,
+            COALESCE(SUM(volume_10m) FILTER (WHERE time >= NOW() - INTERVAL '24 hours'), 0) AS vol_24h,
+            COALESCE(SUM(swap_count) FILTER (WHERE time >= NOW() - INTERVAL '24 hours'), 0) AS txns_24h_metrics
+        FROM token_metrics
+        WHERE time >= NOW() - INTERVAL '24 hours'
+        GROUP BY token_id
     ),
     price_5m AS (
         SELECT DISTINCT ON (token_id) token_id, price
@@ -445,7 +455,7 @@ def get_tokens():
         t.detected_at,
         latest.price AS current_price,
         latest.liquidity,
-        latest.volume_24h,
+        COALESCE(va.vol_24h, 0) AS volume_24h,
         latest.market_cap,
         latest.fdv,
         latest.holders_count,
@@ -470,6 +480,7 @@ def get_tokens():
         
     FROM tokens t
     JOIN latest_metrics latest ON t.token_id = latest.token_id
+    LEFT JOIN volume_agg va ON t.token_id = va.token_id
     LEFT JOIN price_5m p5 ON t.token_id = p5.token_id
     LEFT JOIN price_1h p1h ON t.token_id = p1h.token_id
     LEFT JOIN price_6h p6h ON t.token_id = p6h.token_id
