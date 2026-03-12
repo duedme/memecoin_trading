@@ -125,16 +125,14 @@ function formatPercent(val) {
 }
 
 function formatPNL(val) {
-    if (!val) val = 0;
-    return `<span class="neutral">0</span>`;
+    if (!val || val === 0) return `<span class="neutral">0</span>`;
     const cls = val > 0 ? 'pnl-positive' : 'pnl-negative';
     const sign = val > 0 ? '+' : '';
     return `<span class="${cls}">${sign}${formatSOL(val)}</span>`;
 }
 
 function formatPNLBig(val) {
-    if (!val) val = 0;
-    return `<span class="neutral">0</span>`;
+    if (!val || val === 0) return `<span class="neutral">0</span>`;
     const cls = val > 0 ? 'positive' : 'negative';
     const sign = val > 0 ? '+' : '';
     return `<span class="pnl-big ${cls}">${sign}${formatSOL(val)} SOL</span>`;
@@ -188,8 +186,7 @@ function formatInvestorBadge(classification) {
 }
 
 function formatInvestorScore(score) {
-    if (!score) score = 0;
-    return `<span class="neutral">–</span>`;
+    if (!score || score === 0) return `<span class="neutral">–</span>`;
     let cls = 'inv-score-low';
     if (score >= 70) cls = 'inv-score-high';
     else if (score >= 40) cls = 'inv-score-mid';

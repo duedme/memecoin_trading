@@ -99,16 +99,17 @@ def get_top_traders():
                      ELSE 0 
                 END AS roi_percentage,
                 
-                -- Win rate RECALCULADO: solo posiciones cerradas
+                -- Win rate RECALCULADO: posiciones cerradas con realized_pnl != NULL
                 COALESCE((
                     SELECT CASE WHEN COUNT(*) > 0 
                                 THEN ROUND((COUNT(*) FILTER (WHERE realized_pnl > 0)::numeric / COUNT(*)::numeric) * 100, 2)
-                                ELSE 0 
+                                ELSE NULL 
                            END
                     FROM wallet_positions wp2
                     WHERE wp2.wallet_id = w.wallet_id
                       AND wp2.status = 'closed'
-                ), 0) AS real_winrate,
+                      AND wp2.realized_pnl IS NOT NULL
+                ), NULL) AS real_winrate,
                 
                 -- Posiciones abiertas
                 (SELECT COUNT(*) FROM wallet_positions wp 
@@ -189,7 +190,7 @@ def get_top_traders():
                     CASE WHEN COUNT(*) FILTER (WHERE wts.buy_count > 0 AND wts.sell_count > 0) > 0 
                          THEN ROUND((COUNT(*) FILTER (WHERE wts.buy_count > 0 AND wts.sell_count > 0 AND wts.sold_sol > wts.bought_sol)::numeric / 
                                     COUNT(*) FILTER (WHERE wts.buy_count > 0 AND wts.sell_count > 0)::numeric) * 100, 2)
-                         ELSE 0 
+                         ELSE NULL 
                     END AS real_winrate,
                     
                     -- ROI
@@ -219,8 +220,8 @@ def get_top_traders():
                 w.is_active,
                 w.tags,
                 ws.roi_percentage,
-                0 AS open_positions,
-                0 AS total_unrealized_pnl,
+                NULL AS open_positions,
+                NULL AS total_unrealized_pnl,
                 ws.tokens_traded,
                 
                 -- CLASIFICACIÓN
@@ -262,16 +263,16 @@ def get_top_traders():
             traders.append({
                 'walletaddress': row['wallet_address'],
                 'totaltrades': int(row['total_trades'] or 0),
-                'totalpnl': float(row['total_profit_loss'] or 0),
-                'totalinvested': float(row['total_invested'] or 0),
-                'totalrealized': float(row['total_realized'] or 0),
-                'winrate': float(row['real_winrate'] or 0),
-                'avgprofitpertrade': float(row['avg_profit_per_trade'] or 0),
-                'besttrade': float(row['best_trade'] or 0),
-                'worsttrade': float(row['worst_trade'] or 0),
-                'roipercentage': float(row['roi_percentage'] or 0),
+                'totalpnl': float(row['total_profit_loss']) if row['total_profit_loss'] is not None else None,
+                'totalinvested': float(row['total_invested']) if row['total_invested'] is not None else None,
+                'totalrealized': float(row['total_realized']) if row['total_realized'] is not None else None,
+                'winrate': float(row['real_winrate']) if row['real_winrate'] is not None else None,
+                'avgprofitpertrade': float(row['avg_profit_per_trade']) if row['avg_profit_per_trade'] is not None else None,
+                'besttrade': float(row['best_trade']) if row['best_trade'] is not None else None,
+                'worsttrade': float(row['worst_trade']) if row['worst_trade'] is not None else None,
+                'roipercentage': float(row['roi_percentage']) if row['roi_percentage'] is not None else None,
                 'openpositions': int(row['open_positions'] or 0),
-                'unrealizedpnl': float(row['total_unrealized_pnl'] or 0),
+                'unrealizedpnl': float(row['total_unrealized_pnl']) if row['total_unrealized_pnl'] is not None else None,
                 'tokenstraded': int(row['tokens_traded'] or 0),
                 'tags': row['tags'] or '',
                 'isactive': row['is_active'],
