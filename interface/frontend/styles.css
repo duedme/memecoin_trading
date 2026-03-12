@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════
-   Memecoin Screener v3 — Complete Styles
+   Memecoin Screener v3.3 — Complete Styles
    ═══════════════════════════════════════ */
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -63,6 +63,44 @@ body {
     box-shadow: 0 0 12px rgba(46, 213, 115, 0.2);
 }
 
+/* ═══════════════════════════════════════
+   Investor Guide Toggle & Panel
+   ═══════════════════════════════════════ */
+.guide-toggle-btn {
+    padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg-primary); color: var(--text-secondary);
+    cursor: pointer; font-size: 12px; font-weight: 600;
+    transition: all .2s; white-space: nowrap;
+}
+.guide-toggle-btn:hover { background: #1e2330; color: #fff; border-color: var(--accent-blue); }
+.guide-toggle-btn.active {
+    background: #1e2a3a; color: var(--accent-blue);
+    border-color: var(--accent-blue);
+}
+
+.guide-panel {
+    max-height: 0; overflow: hidden;
+    transition: max-height 0.3s ease-out;
+    background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+}
+.guide-panel.open { max-height: 300px; }
+
+.guide-content {
+    display: flex; gap: 24px; padding: 12px 16px;
+    flex-wrap: wrap;
+}
+.guide-section { min-width: 200px; flex: 1; }
+.guide-title {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .5px; color: var(--text-muted); margin-bottom: 6px;
+}
+.guide-items { display: flex; flex-direction: column; gap: 4px; }
+.guide-item { display: flex; align-items: center; gap: 8px; }
+.guide-item .inv-badge { min-width: 28px; text-align: center; flex-shrink: 0; }
+.guide-item .inv-score-cell { min-width: 36px; text-align: center; flex-shrink: 0; }
+.guide-label { font-size: 11px; color: var(--text-secondary); line-height: 1.4; }
+.guide-label strong { color: var(--text-primary); }
+
 /* Sub-filters */
 .subfilters {
     display: flex; gap: 6px; padding: 8px 16px;
@@ -89,6 +127,16 @@ body {
     font-size: 11px; color: var(--text-muted); padding: 4px 8px;
     background: var(--bg-primary); border-radius: 4px; border: 1px solid var(--border);
 }
+
+/* Behavior dropdown */
+.behavior-dropdown {
+    padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg-primary); color: var(--text-secondary);
+    cursor: pointer; font-size: 11px; outline: none;
+}
+.behavior-dropdown:focus { border-color: var(--accent-blue); }
+.behavior-dropdown option { background: var(--bg-secondary); color: var(--text-primary); }
+.behavior-dropdown optgroup { color: var(--text-muted); font-style: normal; }
 
 /* Table */
 .table-container { overflow-x: auto; }
@@ -186,7 +234,6 @@ td:first-child { text-align: left; padding-left: 16px; }
    Investor Classification Styles
    ═══════════════════════════════════════ */
 
-/* Investor Cell in tokens table */
 .investors-cell {
     display: flex; flex-direction: column; align-items: flex-end;
     gap: 2px; min-width: 80px;
@@ -205,7 +252,6 @@ td:first-child { text-align: left; padding-left: 16px; }
 .inv-casual { background: #1c2028; color: #5c5e64; }
 .inv-losing { background: #3a1e1e; color: #ff4757; }
 
-/* Human vs Bot bar */
 .inv-bar {
     width: 50px; height: 4px; background: #3a1e3a;
     border-radius: 2px; overflow: hidden;
@@ -215,7 +261,6 @@ td:first-child { text-align: left; padding-left: 16px; }
 .inv-quality-mid .inv-bar-fill { background: var(--yellow); }
 .inv-quality-low .inv-bar-fill { background: var(--red); }
 
-/* Score badge in traders */
 .inv-score {
     display: inline-flex; align-items: center; justify-content: center;
     min-width: 22px; height: 16px; padding: 0 4px; border-radius: 8px;
@@ -224,7 +269,6 @@ td:first-child { text-align: left; padding-left: 16px; }
     color: #000; margin-left: 4px;
 }
 
-/* Score cell in traders table */
 .inv-score-cell {
     font-weight: 700; font-size: 13px; padding: 2px 8px;
     border-radius: 6px; display: inline-block;
@@ -233,7 +277,6 @@ td:first-child { text-align: left; padding-left: 16px; }
 .inv-score-mid { background: #2a2d1e; color: var(--yellow); }
 .inv-score-low { background: var(--red-dim); color: var(--red); }
 
-/* Trader classification tags */
 .tag.inv-elite { background: #1a3a1e; color: #2ed573; border: 1px solid #2ed57340; }
 .tag.inv-profitable { background: #1e2a3a; color: #60a5fa; border: 1px solid #60a5fa40; }
 .tag.inv-regular { background: #2a2d35; color: #e1e3e6; }
@@ -252,4 +295,5 @@ td:first-child { text-align: left; padding-left: 16px; }
     .search-box { width: 150px; }
     .stats-bar { display: none; }
     td, th { padding: 8px 6px; font-size: 11px; }
+    .guide-content { flex-direction: column; gap: 12px; }
 }

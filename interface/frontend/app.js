@@ -1,13 +1,23 @@
-// app.js v3.2 - Top Traders + Tokens + Investor Classification + Behavior Filter
+// app.js v3.3 - Top Traders + Tokens + Investor Classification + Behavior Filter + Guide
 const API_BASE = '/api/';
 let currentView = 'traders';
 let currentSort = 'pnl';
 let currentOrder = 'desc';
 let currentTimeRange = 'all';
-let currentBehaviorFilter = 'all'; // NUEVO
+let currentBehaviorFilter = 'all';
 let searchTerm = '';
 let allData = [];
 const REFRESH_INTERVAL = 15000;
+
+// ============================================================================
+// Investor Guide Toggle
+// ============================================================================
+document.getElementById('guideToggle').addEventListener('click', () => {
+    const panel = document.getElementById('guidePanel');
+    const btn = document.getElementById('guideToggle');
+    panel.classList.toggle('open');
+    btn.classList.toggle('active');
+});
 
 // ============================================================================
 // View Configuration
@@ -194,27 +204,24 @@ function formatInvestorScore(score) {
 }
 
 // ============================================================================
-// FUNCIÓN CRÍTICA: formatInvestors - Muestra tipos de inversores en tokens
+// formatInvestors - Investor badges in tokens table
 // ============================================================================
 function formatInvestors(investors) {
     if (!investors || !investors.total) return `<span class="neutral">–</span>`;
-    
+
     const inv = investors;
     let badges = [];
-    
-    // Crear badges para cada tipo de inversor (solo si hay > 0)
+
     if (inv.elite > 0) badges.push(`<span class="inv-badge inv-elite" title="${inv.elite} Elite Traders">⭐${inv.elite}</span>`);
     if (inv.profitable > 0) badges.push(`<span class="inv-badge inv-profitable" title="${inv.profitable} Profitable Traders">💰${inv.profitable}</span>`);
     if (inv.regular > 0) badges.push(`<span class="inv-badge inv-regular" title="${inv.regular} Regular Traders">👤${inv.regular}</span>`);
-    
-    // Calcular porcentaje de humanos vs bots
+
     const humanPct = inv.total > 0 ? Math.round((inv.humans / inv.total) * 100) : 0;
-    
-    // Color de la barra según calidad (más humanos = mejor)
+
     let qualityClass = 'inv-quality-high';
     if (humanPct < 40) qualityClass = 'inv-quality-low';
     else if (humanPct < 70) qualityClass = 'inv-quality-mid';
-    
+
     return `<div class="investors-cell">
         <div class="inv-count">${inv.total}</div>
         <div class="inv-badges">${badges.join('')}</div>
@@ -225,11 +232,11 @@ function formatInvestors(investors) {
 }
 
 // ============================================================================
-// Behavior Filter Logic - NUEVO
+// Behavior Filter Logic
 // ============================================================================
 function filterByBehavior(data, behavior) {
     if (behavior === 'all') return data;
-    
+
     switch (behavior) {
         case 'human':
             return data.filter(t => t.classification && t.classification.behavior === 'human');
@@ -256,11 +263,8 @@ function filterByBehavior(data, behavior) {
 
 function getFilteredTraders() {
     let filtered = [...allData];
-    
-    // Apply behavior filter
     filtered = filterByBehavior(filtered, currentBehaviorFilter);
-    
-    // Apply search
+
     if (searchTerm) {
         const term = searchTerm.toLowerCase();
         filtered = filtered.filter(t => 
@@ -269,14 +273,14 @@ function getFilteredTraders() {
             (t.classification && t.classification.investortype && t.classification.investortype.toLowerCase().includes(term))
         );
     }
-    
+
     return filtered;
 }
 
 function updateBehaviorDropdownCounts() {
     const sel = document.getElementById('behaviorFilter');
     if (!sel || !allData.length) return;
-    
+
     const counts = {
         all: allData.length,
         human: allData.filter(t => t.classification && t.classification.behavior === 'human').length,
@@ -289,7 +293,7 @@ function updateBehaviorDropdownCounts() {
         'bot-regular': allData.filter(t => t.classification && t.classification.investortype === 'bot-regular').length,
         losing: allData.filter(t => t.classification && t.classification.investortype === 'losing').length,
     };
-    
+
     for (const opt of sel.options) {
         const v = opt.value;
         if (counts[v] !== undefined) {
@@ -309,7 +313,7 @@ async function fetchData() {
             const url = `${API_BASE}top-traders?sort=${currentSort}&order=${currentOrder}&limit=50&mintrades=3&timerange=${currentTimeRange}`;
             const res = await fetch(url);
             const data = await res.json();
-            
+
             if (data.success) {
                 allData = data.traders;
                 updateBehaviorDropdownCounts();
@@ -325,7 +329,7 @@ async function fetchData() {
             const url = `${API_BASE}tokens?sort=${currentSort}&order=${currentOrder}&limit=50`;
             const res = await fetch(url);
             const data = await res.json();
-            
+
             if (data.success) {
                 allData = data.tokens;
                 renderTokens(allData);
@@ -353,7 +357,7 @@ async function fetchStats() {
             document.getElementById('statTokens').textContent = `${data.totaltokens.toLocaleString()} tokens`;
             document.getElementById('statWallets').textContent = `${data.totalwallets.toLocaleString()} wallets`;
             document.getElementById('statTxns').textContent = `${data.transactions24h.toLocaleString()} txns/24h`;
-            
+
             if (data.classifications && data.classifications.total > 0) {
                 const c = data.classifications;
                 const classEl = document.getElementById('statClassifications');
@@ -373,10 +377,10 @@ async function fetchStats() {
 function renderTraders(traders) {
     const tbody = document.getElementById('tableBody');
     if (!traders || traders.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:40px;color:#5c5e64">${searchTerm || currentBehaviorFilter !== 'all' ? 'No se encontraron traders con ese filtro' : 'No hay traders con suficientes trades'}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:40px;color:#5c5e64">${searchTerm || currentBehaviorFilter !== 'all' ? 'No traders found with that filter' : 'No traders with enough trades'}</td></tr>`;
         return;
     }
-    
+
     tbody.innerHTML = traders.map((t, i) => {
         const rank = i + 1;
         const rankClass = rank === 1 ? 'gold' : rank === 2 ? 'silver' : rank === 3 ? 'bronze' : '';
@@ -385,7 +389,7 @@ function renderTraders(traders) {
         const shortAddr = `${t.walletaddress.slice(0, 6)}...${t.walletaddress.slice(-4)}`;
         const classificationBadge = formatInvestorBadge(t.classification);
         const score = t.classification ? t.classification.investorscore : 0;
-        
+
         return `<tr onclick="window.open('https://solscan.io/account/${t.walletaddress}','_blank')" title="${t.walletaddress}">
             <td>
                 <div class="trader-cell">
@@ -413,12 +417,12 @@ function renderTraders(traders) {
 }
 
 // ============================================================================
-// Render Tokens - ✅ CORREGIDO: Ahora muestra tipos de inversores
+// Render Tokens
 // ============================================================================
 function renderTokens(tokens) {
     const tbody = document.getElementById('tableBody');
     let filtered = tokens;
-    
+
     if (searchTerm) {
         const term = searchTerm.toLowerCase();
         filtered = tokens.filter(t => 
@@ -427,18 +431,18 @@ function renderTokens(tokens) {
             (t.mintaddress && t.mintaddress.toLowerCase().includes(term))
         );
     }
-    
+
     if (!filtered || filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="13" style="text-align:center;padding:40px;color:#5c5e64">${searchTerm ? 'No se encontraron tokens' : 'No hay datos disponibles'}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" style="text-align:center;padding:40px;color:#5c5e64">${searchTerm ? 'No tokens found' : 'No data available'}</td></tr>`;
         return;
     }
-    
+
     tbody.innerHTML = filtered.map((t, i) => {
         const imgHTML = t.imageurl ? `<img src="${t.imageurl}" alt="">` : '💎';
         const ammBadge = t.amm ? `<span class="badge badge-amm">${t.amm}</span>` : '';
         let displaySymbol = t.symbol || '???';
         let displayName = t.name || 'Unknown';
-        
+
         return `<tr onclick="window.open('https://dexscreener.com/solana/${t.mintaddress}','_blank')" title="${t.mintaddress}">
             <td>
                 <div class="token-cell">
@@ -479,32 +483,26 @@ function switchView(view) {
     searchTerm = '';
     document.getElementById('searchBox').value = '';
     allData = [];
-    document.getElementById('tableBody').innerHTML = `<tr><td colspan="13" style="text-align:center;padding:40px;color:#5c5e64">Cargando datos...</td></tr>`;
-    
-    // Update view buttons
+    document.getElementById('tableBody').innerHTML = `<tr><td colspan="13" style="text-align:center;padding:40px;color:#5c5e64">Loading data...</td></tr>`;
+
     document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
     document.querySelector(`.view-btn[data-view="${view}"]`).classList.add('active');
-    
-    // Update headers
+
     document.getElementById('tableHead').innerHTML = config.headers;
-    
-    // Build sub-filters
+
     const subfilters = document.getElementById('subfilters');
     let filtersHTML = '';
-    
-    // Sort buttons
+
     filtersHTML += config.filters.map((f, i) => 
         `<button class="filter-btn sort-filter${i === 0 ? ' active' : ''}" data-sort="${f.sort}">${f.label}</button>`
     ).join('');
-    
-    // Time filters (only traders)
+
     if (config.timeFilters && config.timeFilters.length > 0) {
         filtersHTML += `<span style="border-left:1px solid #2a2d35;height:20px;margin:0 8px;align-self:center"></span>`;
         filtersHTML += config.timeFilters.map(tf => 
             `<button class="filter-btn time-filter${tf.value === 'all' ? ' active' : ''}" data-time="${tf.value}">${tf.label}</button>`
         ).join('');
-        
-        // BEHAVIOR FILTER DROPDOWN (only for traders)
+
         if (view === 'traders') {
             filtersHTML += `<span style="border-left:1px solid #2a2d35;height:20px;margin:0 8px;align-self:center"></span>`;
             filtersHTML += `<select id="behaviorFilter" class="behavior-dropdown">
@@ -525,10 +523,9 @@ function switchView(view) {
             </select>`;
         }
     }
-    
+
     subfilters.innerHTML = filtersHTML;
-    
-    // Sort filter click handlers
+
     subfilters.querySelectorAll('.sort-filter').forEach(btn => {
         btn.addEventListener('click', () => {
             subfilters.querySelectorAll('.sort-filter').forEach(b => b.classList.remove('active'));
@@ -543,8 +540,7 @@ function switchView(view) {
             fetchData();
         });
     });
-    
-    // Time filter click handlers
+
     subfilters.querySelectorAll('.time-filter').forEach(btn => {
         btn.addEventListener('click', () => {
             subfilters.querySelectorAll('.time-filter').forEach(b => b.classList.remove('active'));
@@ -553,8 +549,7 @@ function switchView(view) {
             fetchData();
         });
     });
-    
-    // Behavior dropdown handler - NUEVO
+
     const behaviorSelect = document.getElementById('behaviorFilter');
     if (behaviorSelect) {
         behaviorSelect.addEventListener('change', (e) => {
@@ -563,27 +558,26 @@ function switchView(view) {
             renderTraders(filtered);
         });
     }
-    
-    // Update search placeholder
+
     document.getElementById('searchBox').placeholder = view === 'traders' 
-        ? 'Buscar wallet, tag o tipo...' 
-        : 'Buscar token o pegar dirección...';
-    
+        ? 'Search wallet, tag or type...' 
+        : 'Search token or paste address...';
+
     fetchData();
 }
 
 function updateStatus(connected, count, type, error) {
     const statusEl = document.getElementById('connectionStatus');
     const updateEl = document.getElementById('lastUpdate');
-    
+
     if (connected) {
         const label = type === 'traders' ? 'traders' : 'tokens';
         const timeLabel = currentView === 'traders' && currentTimeRange !== 'all' ? ` (${currentTimeRange.toUpperCase()})` : '';
         const behaviorLabel = currentView === 'traders' && currentBehaviorFilter !== 'all' ? ` [${currentBehaviorFilter}]` : '';
-        statusEl.innerHTML = `<span class="status-dot connected"></span> Conectado · ${count} ${label}${timeLabel}${behaviorLabel}`;
-        updateEl.textContent = `Última actualización: ${new Date().toLocaleTimeString()}`;
+        statusEl.innerHTML = `<span class="status-dot connected"></span> Connected · ${count} ${label}${timeLabel}${behaviorLabel}`;
+        updateEl.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
     } else {
-        statusEl.innerHTML = `<span class="status-dot error"></span> Error: ${error || 'sin conexión'}`;
+        statusEl.innerHTML = `<span class="status-dot error"></span> Error: ${error || 'no connection'}`;
     }
 }
 
@@ -604,10 +598,9 @@ document.getElementById('searchBox').addEventListener('input', (e) => {
     }
 });
 
-// Init: Top Traders first
 switchView('traders');
 fetchStats();
 setInterval(fetchData, REFRESH_INTERVAL);
 setInterval(fetchStats, 60000);
 
-console.log('✅ Memecoin Screener v3.2: Top Traders + Tokens + Investor Classification + Behavior Filter');
+console.log('✅ Memecoin Screener v3.3: Top Traders + Tokens + Investor Classification + Guide');

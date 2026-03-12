@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -18,7 +18,10 @@
             <button class="view-btn" data-view="tokens" id="btnTokens">🪙 Tokens</button>
         </div>
 
-        <input type="text" class="search-box" id="searchBox" placeholder="Buscar...">
+        <!-- Investor Guide Toggle -->
+        <button class="guide-toggle-btn" id="guideToggle">ℹ️ Investor Guide</button>
+
+        <input type="text" class="search-box" id="searchBox" placeholder="Search...">
 
         <div class="stats-bar" id="statsBar">
             <span class="stat-item" id="statTokens">— tokens</span>
@@ -28,21 +31,77 @@
         </div>
     </div>
 
-    <!-- Sub-filters -->
-    <div class="subfilters" id="subfilters">
-        <!-- Se llenan dinámicamente desde JS -->
+    <!-- Investor Guide Panel (collapsible) -->
+    <div class="guide-panel" id="guidePanel">
+        <div class="guide-content">
+            <div class="guide-section">
+                <div class="guide-title">Investor Badges</div>
+                <div class="guide-items">
+                    <div class="guide-item">
+                        <span class="inv-badge inv-elite">⭐</span>
+                        <span class="guide-label"><strong>Elite</strong> — Top human traders, consistent high profits (score 80-100)</span>
+                    </div>
+                    <div class="guide-item">
+                        <span class="inv-badge inv-profitable">💰</span>
+                        <span class="guide-label"><strong>Profitable</strong> — Human traders with sustained gains (score 50-79)</span>
+                    </div>
+                    <div class="guide-item">
+                        <span class="inv-badge inv-regular">👤</span>
+                        <span class="guide-label"><strong>Regular</strong> — Human traders with normal activity (score 20-49)</span>
+                    </div>
+                    <div class="guide-item">
+                        <span class="inv-badge inv-bot-profit">🤖</span>
+                        <span class="guide-label"><strong>Bot Profitable</strong> — Automated wallets making profit</span>
+                    </div>
+                    <div class="guide-item">
+                        <span class="inv-badge inv-bot">🤖</span>
+                        <span class="guide-label"><strong>Bot Regular</strong> — Automated wallets, break-even</span>
+                    </div>
+                    <div class="guide-item">
+                        <span class="inv-badge inv-losing">📉</span>
+                        <span class="guide-label"><strong>Losing</strong> — Traders losing money (~68% of wallets)</span>
+                    </div>
+                </div>
+            </div>
+            <div class="guide-section">
+                <div class="guide-title">Score Colors</div>
+                <div class="guide-items">
+                    <div class="guide-item">
+                        <span class="inv-score-cell inv-score-high" style="font-size:11px">80+</span>
+                        <span class="guide-label">Elite — follow closely</span>
+                    </div>
+                    <div class="guide-item">
+                        <span class="inv-score-cell inv-score-mid" style="font-size:11px">40-79</span>
+                        <span class="guide-label">Average to good trader</span>
+                    </div>
+                    <div class="guide-item">
+                        <span class="inv-score-cell inv-score-low" style="font-size:11px">0-39</span>
+                        <span class="guide-label">Weak or losing trader</span>
+                    </div>
+                </div>
+            </div>
+            <div class="guide-section">
+                <div class="guide-title">Investors Column</div>
+                <div class="guide-items">
+                    <div class="guide-item">
+                        <span class="guide-label">The number shows total classified investors with open positions. Badges only appear for Elite, Profitable &amp; Regular types. If a token shows no badges, its investors are Losing or Bots. The bar shows Humans (green) vs Bots (purple) ratio.</span>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
+
+    <!-- Sub-filters -->
+    <div class="subfilters" id="subfilters"></div>
 
     <!-- Table -->
     <div class="table-container">
         <table id="mainTable">
-            <thead id="tableHead">
-                <!-- Se llena dinámicamente -->
-            </thead>
+            <thead id="tableHead"></thead>
             <tbody id="tableBody">
                 <tr>
                     <td colspan="13" style="text-align:center; padding:40px; color:#5c5e64">
-                        Cargando datos...
+                        Loading data...
                     </td>
                 </tr>
             </tbody>
@@ -51,8 +110,8 @@
 
     <!-- Status Bar -->
     <div class="status-bar">
-        <span id="connectionStatus"><span class="status-dot"></span> Conectando...</span>
-        <span id="lastUpdate">Última actualización: —</span>
+        <span id="connectionStatus"><span class="status-dot"></span> Connecting...</span>
+        <span id="lastUpdate">Last update: —</span>
     </div>
 
     <script src="app.js"></script>
