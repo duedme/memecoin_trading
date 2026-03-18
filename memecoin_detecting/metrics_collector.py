@@ -351,71 +351,71 @@ class MetricsCollector:
     # ─────────────────────────────────────────────────────
     # PARSE / SAVE
     # ─────────────────────────────────────────────────────
-    def _parse_metric(
-        self,
-        token: dict,
-        mint_account: Optional[dict],
-        supply: Optional[dict],
-        holders: Optional[list],
-    ) -> Optional[dict]:
-        """Convierte datos crudos de RPC en un registro de métrica."""
-        try:
-            # Supply
-            total_supply = 0.0
-            decimals = 9
-            if supply and isinstance(supply, dict) and "value" in supply:
-                val = supply["value"]
-                total_supply = float(val.get("uiAmount", 0) or 0)
-                decimals = int(val.get("decimals", 9))
+        def _parse_metric(
+            self,
+            token: dict,
+            mint_account: Optional[dict],
+            supply: Optional[dict],
+            holders: Optional[list],
+        ) -> Optional[dict]:
+            """Convierte datos crudos de RPC en un registro de métrica."""
+            try:
+                # Supply
+                total_supply = 0.0
+                decimals = 9
+                if supply and isinstance(supply, dict) and "value" in supply:
+                    val = supply["value"]
+                    total_supply = float(val.get("uiAmount", 0) or 0)
+                    decimals = int(val.get("decimals", 9))
 
-            # Holder concentration
-            holder_count = 0
-            top10_pct = 0.0
-            if holders and isinstance(holders, list):
-                holder_count = len(holders)
-                if total_supply > 0:
-                    top10_sum = 0.0
-                    for h in holders[:10]:
-                        ui = h.get("uiAmount")
-                        if ui and isinstance(ui, (int, float)):
-                            top10_sum += float(ui)
-                        else:
-                            raw = float(h.get("amount", 0))
-                            top10_sum += raw / (10 ** decimals)
-                    top10_pct = min(top10_sum / total_supply * 100, 100.0)
+                # Holder concentration
+                holder_count = 0
+                top10_pct = 0.0
+                if holders and isinstance(holders, list):
+                    holder_count = len(holders)
+                    if total_supply > 0:
+                        top10_sum = 0.0
+                        for h in holders[:10]:
+                            ui = h.get("uiAmount")
+                            if ui and isinstance(ui, (int, float)):
+                                top10_sum += float(ui)
+                            else:
+                                raw = float(h.get("amount", 0))
+                                top10_sum += raw / (10 ** decimals)
+                        top10_pct = min(top10_sum / total_supply * 100, 100.0)
 
-            return {
-                "token_id": token["token_id"],
-                "time": datetime.now(),
-                "price_sol": 0.0,       # enriched by price feed / Jupiter
-                "price_usd": 0.0,
-                "market_cap_sol": 0.0,
-                "liquidity_sol": 0.0,   # enriched by pool data
-                "volume_24h": 0.0,      # enriched by tx aggregation
-                "holder_count": holder_count,
-                "top10_holder_pct": round(top10_pct, 2),
-            }
+                # COLUMNAS ALINEADAS CON SCHEMA
+                return {
+                    "token_id": token["token_id"],
+                    "time": datetime.now(),
+                    "price": 0.0,          # antes: price_sol
+                    "market_cap": 0.0,     # antes: market_cap_sol
+                    "fdv": 0.0,            # NUEVO (schema lo tiene)
+                    "liquidity": 0.0,      # antes: liquidity_sol
+                    "volume_10m": 0.0,     # antes: volume_24h
+                    "swap_count": 0,       # NUEVO (schema lo tiene)
+                    "holders_count": holder_count,  # antes: holder_count
+                }
 
-        except Exception as e:
-            logger.debug(f"_parse_metric error: {e}")
-            return None
+            except Exception as e:
+                logger.debug(f"_parse_metric error: {e}")
+                return None
+
 
     def _save_metrics_batch(self, metrics: List[dict]):
         """
         Bulk INSERT de métricas.
-        FIX: sin pool_address (no existe en schema).
-        FIX: sin ON CONFLICT (no hay UNIQUE constraint).
-        Time-series data → INSERT simple.
+        FIX: columnas alineadas con schema (price, market_cap, volume_10m, holders_count).
+        Time-series data → INSERT simple (sin ON CONFLICT).
         """
         try:
             cursor = self.conn.cursor()
             values = [
                 (
                     m["token_id"], m["time"],
-                    m["price_sol"], m["price_usd"],
-                    m["market_cap_sol"], m["liquidity_sol"],
-                    m["volume_24h"], m["holder_count"],
-                    m["top10_holder_pct"],
+                    m["price"], m["market_cap"], m["fdv"],
+                    m["liquidity"], m["volume_10m"],
+                    m["swap_count"], m["holders_count"],
                 )
                 for m in metrics
             ]
@@ -423,8 +423,8 @@ class MetricsCollector:
             execute_values(
                 cursor,
                 """INSERT INTO token_metrics
-                    (token_id, time, price_sol, price_usd, market_cap_sol,
-                     liquidity_sol, volume_24h, holder_count, top10_holder_pct)
+                    (token_id, time, price, market_cap, fdv,
+                    liquidity, volume_10m, swap_count, holders_count)
                 VALUES %s""",
                 values,
             )
@@ -436,6 +436,7 @@ class MetricsCollector:
             logger.error(f"Error batch save: {e}")
             self._safe_rollback()
             self.stats["errors"] += 1
+
 
     # ─────────────────────────────────────────────────────
     # STATS

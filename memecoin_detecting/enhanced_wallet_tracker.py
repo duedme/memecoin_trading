@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.handlers.clear()  # ← FIX: Prevenir handlers duplicados
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-fh = logging.FileHandler('/home/rebelforce/scripts/memecoin_detecting/enhanced_wallet_tracker.log')
+fh = logging.FileHandler('enhanced_wallet_tracker.log')
 fh.setFormatter(formatter)
 sh = logging.StreamHandler()
 sh.setFormatter(formatter)
@@ -68,22 +68,15 @@ class EnhancedWalletTracker:
         self.discovery_interval_minutes = 3
         self.max_discovered_wallets = 1000
         self.min_trades_to_track = 2
+        # v3: Webhook-primary mode
+        self.webhook_primary_mode = True  # Si True, solo hace discovery, no tracking polling
+
 
         # Program IDs de AMMs conocidos para detectar swaps
-        self.amm_program_ids = {
-            '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',   # Pump.fun
-            'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA',   # PumpSwap
-            'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',  # Raydium AMM
-            'LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj',  # Raydium LaunchLab
-            'FLUXubRmkEi2q6K3Y9kBPg9248ggaZVsoSFhtJHSrm1X',  # FluxBeam
-            'HEAVENoP2qxoeuF8Dj2oT1GHEnu49U5mJYkdeC8BAX2o',  # HeavenDEX
-            'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',   # Meteora DLMM
-            'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG',   # Meteora DYN2
-            'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',  # Meteora DYN
-            'dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN',   # Meteora DBC
-            'MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG',   # Moonit
-            'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',   # Orca
-        }
+        # Import AMMs from shared_config (no duplicar)
+        from shared_config import AMM_PROGRAMS
+        self.amm_program_ids = set(AMM_PROGRAMS.keys())
+
 
         # Estadísticas
         self.transactions_processed = 0
@@ -676,76 +669,80 @@ class EnhancedWalletTracker:
     # ═══════════════════════════════════════════════════════════
     # FIX v5.1: Rollback preventivo entre cada load_*() en run()
     # ═══════════════════════════════════════════════════════════
-    def run(self, reload_interval_minutes: int = 30, cycle_interval_seconds: int = 60):
-        """Bucle principal"""
-        logger.info("🚀 Iniciando ENHANCED WalletTracker (seguimiento completo)...")
+    def run(self):
+        """
+        Loop principal del tracker.
+        v3: Webhook-primary mode
+          - Discovery cada 3 minutos (wallets nuevos desde BD)
+          - Si webhook_primary_mode=True: NO hace tracking polling (webhooks cubren eso)
+          - Si webhook_primary_mode=False: hace tracking polling cada 60s (modo legacy)
+        """
+        logger.info("=" * 70)
+        logger.info("🔍 ENHANCED WALLET TRACKER v3 — WEBHOOK-PRIMARY MODE")
+        logger.info(f"   Discovery: cada {self.discovery_interval_minutes} min")
+        logger.info(f"   Webhook-primary: {self.webhook_primary_mode}")
+        if not self.webhook_primary_mode:
+            logger.info("   ⚠ Legacy polling mode activo (no recomendado)")
+        logger.info("=" * 70)
+
         self.connect_db()
 
-        # FIX v5.1: Rollback preventivo entre cada carga para aislar fallos
-        self.load_processed_signatures()
-        self._safe_rollback()
-
-        self.load_all_known_tokens()
-        self._safe_rollback()
-
-        self.load_tracked_wallets()
-        self._safe_rollback()
-
-        self.load_discovered_wallets()
-        self._safe_rollback()
-
-        last_reload = datetime.now()
-        self.last_discovery_time = datetime.now()
-        cycle_count = 0
+        last_discovery = 0
+        last_tracking_run = 0
 
         try:
             while True:
-                cycle_start = time.time()
+                try:
+                    now = time.time()
 
-                # Recargar listas periódicamente
-                if datetime.now() - last_reload > timedelta(minutes=reload_interval_minutes):
-                    logger.info("🔄 Recargando listas...")
-                    self.load_all_known_tokens()
+                    # === 1. DISCOVERY CYCLE (cada 3 min) ===
+                    elapsed_discovery = now - last_discovery
+                    if elapsed_discovery >= (self.discovery_interval_minutes * 60):
+                        logger.info(f"\n{'=' * 50}")
+                        logger.info("🔍 DISCOVERY: Buscando wallets nuevas desde BD...")
+                        logger.info(f"{'=' * 50}")
+                        self.run_discovery_cycle()
+                        last_discovery = now
+
+                    # === 2. TRACKING CYCLE ===
+                    # v3: En modo webhook-primary, solo discovery. No polling continuo.
+                    if not self.webhook_primary_mode:
+                        elapsed_tracking = now - last_tracking_run
+                        if elapsed_tracking >= 60:
+                            self.run_tracking_cycle()
+                            last_tracking_run = now
+                    else:
+                        # Webhook mode: solo actualizamos timestamp para evitar loop innecesario
+                        last_tracking_run = now
+
+                    # === 3. STATS (cada 5 min) ===
+                    self.stats["cycles"] += 1
+                    if self.stats["cycles"] % 50 == 0:  # ~5 min si sleep 5s
+                        self.log_stats()
+
+                    # Sleep 5s entre checks
+                    time.sleep(5)
+
+                except psycopg2.OperationalError:
+                    logger.warning("⚠ DB connection lost, reconectando...")
+                    self.connect_db()
+                    time.sleep(5)
+
+                except Exception as e:
+                    logger.error(f"Error en loop principal: {e}")
+                    self.stats["errors"] += 1
                     self._safe_rollback()
-                    self.load_tracked_wallets()
-                    self._safe_rollback()
-                    self.load_discovered_wallets()
-                    self._safe_rollback()
-                    last_reload = datetime.now()
-
-                # Auto-descubrir wallets cada N minutos
-                if datetime.now() - self.last_discovery_time > timedelta(minutes=self.discovery_interval_minutes):
-                    logger.info("🔍 Iniciando auto-descubrimiento de wallets...")
-                    new_found = self.discover_wallets_from_recent_tokens()
-                    pruned = self.prune_inactive_wallets()
-                    self.last_discovery_time = datetime.now()
-                    if new_found > 0 or pruned > 0:
-                        logger.info(f"📋 Descubrimiento: +{new_found} nuevos, -{pruned} inactivos")
-
-                # Ejecutar ciclo de tracking
-                txs_count = self.run_tracking_cycle()
-                cycle_count += 1
-
-                # Stats cada 10 ciclos
-                if cycle_count % 10 == 0:
-                    self.print_stats()
-
-                elapsed = time.time() - cycle_start
-                wait_time = max(0, cycle_interval_seconds - elapsed)
-                logger.info(f"Ciclo {cycle_count} completado en {elapsed:.2f}s. Esperando {wait_time:.2f}s...")
-                time.sleep(wait_time)
+                    time.sleep(10)
 
         except KeyboardInterrupt:
-            logger.info("\n⚠️  Deteniendo...")
-            self.print_stats()
-        except Exception as e:
-            logger.error(f"Error fatal: {e}")
-            self._safe_rollback()
-            raise
+            logger.info("\n🛑 Deteniendo tracker...")
+
         finally:
-            if self.conn:
+            if self.conn and not self.conn.closed:
                 self.conn.close()
-                logger.info("Conexión cerrada")
+            logger.info("Tracker detenido.")
+
+
 
 
 if __name__ == "__main__":
