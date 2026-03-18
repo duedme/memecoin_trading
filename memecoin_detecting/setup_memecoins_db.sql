@@ -1,428 +1,346 @@
--- ============================================================================
--- Script de Automatización: memecoins_db
--- PostgreSQL 14 + TimescaleDB 2.19.3
--- ============================================================================
--- PREREQUISITOS:
---   - PostgreSQL 14 instalado y corriendo
---   - TimescaleDB 2.19.3 extensión disponible
---   - Base de datos 'memecoins_db' creada
---
--- USO:
---   sudo -u postgres psql -d memecoins_db -f setup_memecoins_db.sql
--- ============================================================================
+-- setup_memecoins_db.sql
+-- Schema de base de datos para sistema de detección de memecoins
+-- VERSIÓN CORREGIDA:
+--   - Añadidas columnas faltantes: creation_signature, creation_instruction, 
+--     detected_at, retention_category
+--   - Añadidas columnas faltantes en tracked_wallets: label, reason
 
-\echo '🚀 Iniciando creación de schema memecoins_db...'
-\echo ''
+-- ============================================================
+-- 1. TABLA: tokens
+-- ============================================================
 
--- Habilitar extensión TimescaleDB
-\echo '📦 Habilitando extensión TimescaleDB...'
-CREATE EXTENSION IF NOT EXISTS timescaledb;
-
-\echo '✓ TimescaleDB habilitado'
-\echo ''
-
--- ============================================================================
--- SECCIÓN 1: TABLAS MAESTRAS
--- ============================================================================
-
-\echo '📋 Creando tablas maestras...'
-
--- 1.1 tokens
-\echo '  → Creando tabla tokens...'
 CREATE TABLE IF NOT EXISTS tokens (
-    token_id        SERIAL PRIMARY KEY,
-    mint_address    VARCHAR NOT NULL UNIQUE,
-    name            VARCHAR,
-    symbol          VARCHAR,
-    total_supply    BIGINT,
-    decimals        INTEGER,
-    uri             TEXT,
-    image_url       TEXT,
-    amm             VARCHAR NOT NULL,
-    created_at      TIMESTAMP NOT NULL,
-    pool_address    VARCHAR,
-    status          VARCHAR
+    token_id SERIAL PRIMARY KEY,
+    mint_address VARCHAR(44) UNIQUE NOT NULL,
+    name VARCHAR(255),
+    symbol VARCHAR(20),
+    decimals INTEGER DEFAULT 9,
+    total_supply BIGINT,
+    image_url TEXT,
+    amm VARCHAR(50),
+    created_at TIMESTAMP,
+    detected_at TIMESTAMP DEFAULT NOW(),        -- FIX: Añadida
+    creation_signature VARCHAR(88),             -- FIX: Añadida
+    creation_instruction TEXT,                  -- FIX: Añadida (opcional)
+    pool_address VARCHAR(44),
+    status VARCHAR(20) DEFAULT 'active',
+    retention_category VARCHAR(20) DEFAULT 'shortterm'  -- FIX: Añadida
 );
 
-CREATE INDEX IF NOT EXISTS idx_tokens_amm     ON tokens (amm);
-CREATE INDEX IF NOT EXISTS idx_tokens_created ON tokens (created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_tokens_mint    ON tokens (mint_address);
-CREATE INDEX IF NOT EXISTS idx_tokens_pool    ON tokens (pool_address);
-CREATE INDEX IF NOT EXISTS idx_tokens_status  ON tokens (status);
+CREATE INDEX IF NOT EXISTS idx_tokens_mint ON tokens(mint_address);
+CREATE INDEX IF NOT EXISTS idx_tokens_status ON tokens(status);
+CREATE INDEX IF NOT EXISTS idx_tokens_detected_at ON tokens(detected_at);
+CREATE INDEX IF NOT EXISTS idx_tokens_retention ON tokens(retention_category);
 
-\echo '  ✓ tokens creado'
+-- ============================================================
+-- 2. TABLA: token_metrics
+-- ============================================================
 
--- 1.2 wallets
-\echo '  → Creando tabla wallets...'
-CREATE TABLE IF NOT EXISTS wallets (
-    wallet_id            SERIAL PRIMARY KEY,
-    wallet_address       VARCHAR(44) NOT NULL UNIQUE,
-    total_trades         INTEGER DEFAULT 0,
-    total_profit_loss    NUMERIC(30,8) DEFAULT 0,
-    total_invested       NUMERIC(30,8) DEFAULT 0,
-    total_realized       NUMERIC(30,8) DEFAULT 0,
-    win_rate             NUMERIC(5,2) DEFAULT 0,
-    avg_profit_per_trade NUMERIC(30,8) DEFAULT 0,
-    best_trade           NUMERIC(30,8) DEFAULT 0,
-    worst_trade          NUMERIC(30,8) DEFAULT 0,
-    first_seen           TIMESTAMP DEFAULT NOW(),
-    last_seen            TIMESTAMP DEFAULT NOW(),
-    is_active            BOOLEAN DEFAULT TRUE,
-    tags                 TEXT[],
-    notes                TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_wallets_address     ON wallets (wallet_address);
-CREATE INDEX IF NOT EXISTS idx_wallets_last_seen   ON wallets (last_seen DESC);
-CREATE INDEX IF NOT EXISTS idx_wallets_profit_loss ON wallets (total_profit_loss DESC);
-CREATE INDEX IF NOT EXISTS idx_wallets_win_rate    ON wallets (win_rate DESC);
-
-\echo '  ✓ wallets creado'
-
--- 1.3 tracked_wallets
-\echo '  → Creando tabla tracked_wallets...'
-CREATE TABLE IF NOT EXISTS tracked_wallets (
-    wallet_address VARCHAR PRIMARY KEY,
-    is_active      BOOLEAN
-);
-
-CREATE INDEX IF NOT EXISTS idx_tracked_wallets_active
-    ON tracked_wallets (is_active) WHERE (is_active = true);
-
-\echo '  ✓ tracked_wallets creado'
-
--- 1.4 transactions
-\echo '  → Creando tabla transactions...'
-CREATE TABLE IF NOT EXISTS transactions (
-    tx_id       SERIAL PRIMARY KEY,
-    signature   VARCHAR NOT NULL UNIQUE,
-    token_id    INTEGER NOT NULL REFERENCES tokens(token_id),
-    block_time  TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_tx_signature ON transactions (signature);
-CREATE INDEX IF NOT EXISTS idx_tx_token     ON transactions (token_id, block_time DESC);
-
-\echo '  ✓ transactions creado'
-
--- 1.5 wallet_positions
-\echo '  → Creando tabla wallet_positions...'
-CREATE TABLE IF NOT EXISTS wallet_positions (
-    position_id               SERIAL PRIMARY KEY,
-    wallet_id                 INTEGER NOT NULL REFERENCES wallets(wallet_id) ON DELETE CASCADE,
-    token_id                  INTEGER NOT NULL REFERENCES tokens(token_id),
-    current_balance           NUMERIC(30,8) DEFAULT 0,
-    avg_buy_price             NUMERIC(30,8),
-    total_cost                NUMERIC(30,8) DEFAULT 0,
-    total_sold                NUMERIC(30,8) DEFAULT 0,
-    realized_pnl              NUMERIC(30,8) DEFAULT 0,
-    unrealized_pnl            NUMERIC(30,8) DEFAULT 0,
-    status                    VARCHAR DEFAULT 'open',
-    first_buy                 TIMESTAMP,
-    last_buy                  TIMESTAMP,
-    last_sell                 TIMESTAMP,
-    closed_at                 TIMESTAMP,
-    origin                    VARCHAR DEFAULT 'tracked',
-    unrealized_roi_percentage NUMERIC(10,2),
-    UNIQUE (wallet_id, token_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_positions_status                ON wallet_positions (status);
-CREATE INDEX IF NOT EXISTS idx_positions_token                 ON wallet_positions (token_id);
-CREATE INDEX IF NOT EXISTS idx_positions_wallet                ON wallet_positions (wallet_id);
-CREATE INDEX IF NOT EXISTS idx_wallet_positions_wallet_token   ON wallet_positions (wallet_id, token_id);
-CREATE INDEX IF NOT EXISTS idx_wallet_positions_unrealized_pnl ON wallet_positions (unrealized_pnl DESC);
-CREATE INDEX IF NOT EXISTS idx_walletpositions_origin          ON wallet_positions (origin);
-CREATE INDEX IF NOT EXISTS idx_walletpositions_origin_pnl      ON wallet_positions (wallet_id, origin, realized_pnl)
-    WHERE (origin = 'tracked');
-
-\echo '  ✓ wallet_positions creado'
-\echo ''
-
--- ============================================================================
--- SECCIÓN 2: HYPERTABLES (Series de tiempo)
--- ============================================================================
-
-\echo '⏰ Creando hypertables...'
-
--- 2.1 token_metrics
-\echo '  → Creando tabla token_metrics...'
 CREATE TABLE IF NOT EXISTS token_metrics (
-    time               TIMESTAMPTZ NOT NULL,
-    token_id           INTEGER     NOT NULL REFERENCES tokens(token_id),
-    price              NUMERIC,
-    volume_24h         NUMERIC,
-    liquidity          NUMERIC,
-    market_cap         NUMERIC,
-    fdv                NUMERIC,
-    holders_count      INTEGER,
-    buyers_count       INTEGER,
-    sellers_count      INTEGER,
-    transactions_count INTEGER,
-    data_source        VARCHAR DEFAULT 'local_node',
-    volume_10m         NUMERIC DEFAULT 0,
-    volume_1h          NUMERIC DEFAULT 0,
-    pool_address       VARCHAR,
-    transaction_count  INTEGER DEFAULT 0,
-    swap_count         INTEGER DEFAULT 0
+    metric_id SERIAL PRIMARY KEY,
+    token_id INTEGER REFERENCES tokens(token_id) ON DELETE CASCADE,
+    time TIMESTAMP DEFAULT NOW(),
+    price NUMERIC(20, 10),
+    market_cap NUMERIC(20, 2),
+    fdv NUMERIC(20, 2),
+    liquidity NUMERIC(20, 4),
+    volume_10m NUMERIC(20, 4) DEFAULT 0,
+    swap_count INTEGER DEFAULT 0,
+    holders_count INTEGER DEFAULT 0
 );
 
--- Verificar si ya es hypertable antes de convertir
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM timescaledb_information.hypertables 
-        WHERE hypertable_name = 'token_metrics'
-    ) THEN
-        PERFORM create_hypertable('token_metrics', 'time',
-            chunk_time_interval => INTERVAL '7 days');
-        RAISE NOTICE 'token_metrics convertido a hypertable';
-    ELSE
-        RAISE NOTICE 'token_metrics ya es hypertable, saltando...';
-    END IF;
-END $$;
+CREATE INDEX IF NOT EXISTS idx_metrics_token_time ON token_metrics(token_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_metrics_time ON token_metrics(time);
 
-CREATE INDEX IF NOT EXISTS idx_token_metrics_time_token ON token_metrics (time, token_id);
-CREATE INDEX IF NOT EXISTS idx_metrics_token_time       ON token_metrics (token_id, time DESC);
-CREATE INDEX IF NOT EXISTS idx_token_metrics_time       ON token_metrics (time DESC);
-CREATE INDEX IF NOT EXISTS idx_token_metrics_token_id   ON token_metrics (token_id, time DESC);
-CREATE INDEX IF NOT EXISTS idx_metrics_pool             ON token_metrics (pool_address);
+-- ============================================================
+-- 3. TABLA: wallets
+-- ============================================================
 
-\echo '  ✓ token_metrics (hypertable) creado'
+CREATE TABLE IF NOT EXISTS wallets (
+    wallet_id SERIAL PRIMARY KEY,
+    wallet_address VARCHAR(44) UNIQUE NOT NULL,
+    total_trades INTEGER DEFAULT 0,
+    total_profit_loss NUMERIC(20, 6) DEFAULT 0,
+    total_invested NUMERIC(20, 6) DEFAULT 0,
+    total_realized NUMERIC(20, 6) DEFAULT 0,
+    win_rate NUMERIC(5, 2) DEFAULT 0,
+    avg_profit_per_trade NUMERIC(20, 6) DEFAULT 0,
+    best_trade NUMERIC(20, 6) DEFAULT 0,
+    worst_trade NUMERIC(20, 6) DEFAULT 0,
+    first_seen TIMESTAMP,
+    last_seen TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE
+);
 
--- 2.2 wallet_transactions
-\echo '  → Creando tabla wallet_transactions...'
+CREATE INDEX IF NOT EXISTS idx_wallets_address ON wallets(wallet_address);
+CREATE INDEX IF NOT EXISTS idx_wallets_pnl ON wallets(total_profit_loss DESC);
+CREATE INDEX IF NOT EXISTS idx_wallets_last_seen ON wallets(last_seen);
+
+-- ============================================================
+-- 4. TABLA: wallet_transactions
+-- ============================================================
+
 CREATE TABLE IF NOT EXISTS wallet_transactions (
-    transaction_id INTEGER     NOT NULL,
-    time           TIMESTAMPTZ NOT NULL,
-    wallet_id      INTEGER     NOT NULL REFERENCES wallets(wallet_id) ON DELETE CASCADE,
-    token_id       INTEGER     NOT NULL REFERENCES tokens(token_id),
-    signature      VARCHAR,
-    tx_type        VARCHAR,
-    amount         NUMERIC(30,8),
-    price          NUMERIC(30,8),
-    sol_amount     NUMERIC(30,8),
-    side           VARCHAR,
-    order_id       VARCHAR,
-    PRIMARY KEY (time, transaction_id)
+    transaction_id SERIAL PRIMARY KEY,
+    wallet_id INTEGER REFERENCES wallets(wallet_id) ON DELETE CASCADE,
+    token_id INTEGER REFERENCES tokens(token_id) ON DELETE CASCADE,
+    signature VARCHAR(88) UNIQUE NOT NULL,
+    tx_type VARCHAR(10) NOT NULL,
+    token_amount NUMERIC(30, 6),
+    sol_amount NUMERIC(20, 6),
+    price NUMERIC(20, 10),
+    time TIMESTAMP,
+    is_partial BOOLEAN DEFAULT FALSE,
+    order_id VARCHAR(64)
 );
 
--- Verificar si ya es hypertable antes de convertir
-DO $$
+CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON wallet_transactions(wallet_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_transactions_token ON wallet_transactions(token_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_transactions_signature ON wallet_transactions(signature);
+CREATE INDEX IF NOT EXISTS idx_transactions_time ON wallet_transactions(time DESC);
+
+-- ============================================================
+-- 5. TABLA: wallet_positions
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS wallet_positions (
+    position_id SERIAL PRIMARY KEY,
+    wallet_id INTEGER REFERENCES wallets(wallet_id) ON DELETE CASCADE,
+    token_id INTEGER REFERENCES tokens(token_id) ON DELETE CASCADE,
+    total_bought NUMERIC(30, 6) DEFAULT 0,
+    total_sold NUMERIC(30, 6) DEFAULT 0,
+    current_balance NUMERIC(30, 6) DEFAULT 0,
+    avg_buy_price NUMERIC(20, 10),
+    avg_sell_price NUMERIC(20, 10),
+    realized_pnl NUMERIC(20, 6) DEFAULT 0,
+    unrealized_pnl NUMERIC(20, 6) DEFAULT 0,
+    first_buy TIMESTAMP,
+    last_buy TIMESTAMP,
+    first_sell TIMESTAMP,
+    last_sell TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'open',
+    UNIQUE(wallet_id, token_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_positions_wallet ON wallet_positions(wallet_id);
+CREATE INDEX IF NOT EXISTS idx_positions_token ON wallet_positions(token_id);
+
+-- ============================================================
+-- 6. TABLA: tracked_wallets
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS tracked_wallets (
+    id SERIAL PRIMARY KEY,
+    wallet_address VARCHAR(44) UNIQUE NOT NULL,
+    label VARCHAR(255),           -- FIX: Añadida
+    reason TEXT,                  -- FIX: Añadida
+    is_active BOOLEAN DEFAULT TRUE,
+    added_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tracked_wallets_active ON tracked_wallets(is_active);
+
+-- ============================================================
+-- 7. STORED PROCEDURE: process_transaction
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION process_transaction(
+    p_wallet_address VARCHAR(44),
+    p_mint_address VARCHAR(44),
+    p_signature VARCHAR(88),
+    p_tx_type VARCHAR(10),
+    p_token_amount NUMERIC(30, 6),
+    p_sol_amount NUMERIC(20, 6),
+    p_price NUMERIC(20, 10),
+    p_time TIMESTAMP
+)
+RETURNS VOID AS $$
+DECLARE
+    v_wallet_id INTEGER;
+    v_token_id INTEGER;
+    v_position_id INTEGER;
+    v_current_balance NUMERIC(30, 6);
+    v_avg_buy_price NUMERIC(20, 10);
+    v_avg_sell_price NUMERIC(20, 10);
+    v_realized_pnl NUMERIC(20, 6);
+    v_total_bought NUMERIC(30, 6);
+    v_total_sold NUMERIC(30, 6);
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM timescaledb_information.hypertables 
-        WHERE hypertable_name = 'wallet_transactions'
-    ) THEN
-        PERFORM create_hypertable('wallet_transactions', 'time',
-            chunk_time_interval => INTERVAL '1 day');
-        RAISE NOTICE 'wallet_transactions convertido a hypertable';
-    ELSE
-        RAISE NOTICE 'wallet_transactions ya es hypertable, saltando...';
+    -- 1. Obtener o crear wallet
+    INSERT INTO wallets (wallet_address, first_seen, last_seen, is_active)
+    VALUES (p_wallet_address, p_time, p_time, TRUE)
+    ON CONFLICT (wallet_address) DO UPDATE
+    SET last_seen = p_time
+    RETURNING wallet_id INTO v_wallet_id;
+
+    IF v_wallet_id IS NULL THEN
+        SELECT wallet_id INTO v_wallet_id
+        FROM wallets
+        WHERE wallet_address = p_wallet_address;
     END IF;
-END $$;
 
-CREATE INDEX IF NOT EXISTS idx_wallet_tx_signature_unique ON wallet_transactions (signature, time);
-CREATE INDEX IF NOT EXISTS idx_wallet_tx_time_wallet      ON wallet_transactions (time DESC, wallet_id);
-CREATE INDEX IF NOT EXISTS idx_wallet_tx_token            ON wallet_transactions (token_id, time DESC);
-CREATE INDEX IF NOT EXISTS idx_wallet_tx_token_time       ON wallet_transactions (token_id, time DESC);
-CREATE INDEX IF NOT EXISTS idx_wallet_tx_type             ON wallet_transactions (tx_type);
-CREATE INDEX IF NOT EXISTS idx_wallet_tx_wallet           ON wallet_transactions (wallet_id, time DESC);
-CREATE INDEX IF NOT EXISTS idx_wallet_tx_order_id         ON wallet_transactions (order_id) WHERE (order_id IS NOT NULL);
+    -- 2. Obtener token_id
+    SELECT token_id INTO v_token_id
+    FROM tokens
+    WHERE mint_address = p_mint_address;
 
-\echo '  ✓ wallet_transactions (hypertable) creado'
-\echo ''
-
--- ============================================================================
--- SECCIÓN 3: COMPRESIÓN
--- ============================================================================
-
-\echo '🗜️  Configurando compresión...'
-
--- Configurar compresión en token_metrics
-DO $$
-BEGIN
-    -- Verificar si ya tiene compresión habilitada
-    IF NOT EXISTS (
-        SELECT 1 FROM timescaledb_information.hypertables 
-        WHERE hypertable_name = 'token_metrics' AND compression_enabled = true
-    ) THEN
-        ALTER TABLE token_metrics SET (
-            timescaledb.compress,
-            timescaledb.compress_segmentby = 'token_id',
-            timescaledb.compress_orderby   = 'time DESC'
-        );
-        RAISE NOTICE 'Compresión habilitada en token_metrics';
-    ELSE
-        RAISE NOTICE 'token_metrics ya tiene compresión, saltando...';
+    IF v_token_id IS NULL THEN
+        RAISE EXCEPTION 'Token % no existe en la tabla tokens', p_mint_address;
     END IF;
-END $$;
 
--- Agregar política de compresión (comprimir chunks > 2 días)
-SELECT add_compression_policy('token_metrics', INTERVAL '2 days',
-    if_not_exists => true,
-    schedule_interval => INTERVAL '12 hours');
+    -- 3. Insertar transacción
+    INSERT INTO wallet_transactions (
+        wallet_id, token_id, signature, tx_type,
+        token_amount, sol_amount, price, time
+    )
+    VALUES (
+        v_wallet_id, v_token_id, p_signature, p_tx_type,
+        p_token_amount, p_sol_amount, p_price, p_time
+    )
+    ON CONFLICT (signature) DO NOTHING;
 
-\echo '  ✓ Compresión configurada en token_metrics'
-\echo ''
+    -- 4. Obtener o crear posición
+    INSERT INTO wallet_positions (wallet_id, token_id, first_buy, last_buy)
+    VALUES (v_wallet_id, v_token_id, p_time, p_time)
+    ON CONFLICT (wallet_id, token_id) DO NOTHING
+    RETURNING position_id INTO v_position_id;
 
--- ============================================================================
--- SECCIÓN 4: POLÍTICAS DE RETENCIÓN
--- ============================================================================
+    IF v_position_id IS NULL THEN
+        SELECT position_id INTO v_position_id
+        FROM wallet_positions
+        WHERE wallet_id = v_wallet_id AND token_id = v_token_id;
+    END IF;
 
-\echo '🗑️  Configurando políticas de retención...'
+    -- 5. Actualizar posición según tipo de transacción
+    IF p_tx_type = 'buy' THEN
+        -- COMPRA
+        SELECT 
+            current_balance,
+            avg_buy_price,
+            total_bought
+        INTO 
+            v_current_balance,
+            v_avg_buy_price,
+            v_total_bought
+        FROM wallet_positions
+        WHERE position_id = v_position_id;
 
--- Retención token_metrics (14 días)
-SELECT add_retention_policy('token_metrics', INTERVAL '14 days',
-    if_not_exists => true);
+        -- Calcular nuevo precio promedio de compra
+        IF v_current_balance > 0 THEN
+            v_avg_buy_price := (
+                (v_avg_buy_price * v_current_balance) + (p_price * p_token_amount)
+            ) / (v_current_balance + p_token_amount);
+        ELSE
+            v_avg_buy_price := p_price;
+        END IF;
 
-\echo '  ✓ Retención configurada: token_metrics (14 días)'
+        -- Actualizar posición
+        UPDATE wallet_positions
+        SET
+            total_bought = total_bought + p_token_amount,
+            current_balance = current_balance + p_token_amount,
+            avg_buy_price = v_avg_buy_price,
+            last_buy = p_time,
+            status = 'open'
+        WHERE position_id = v_position_id;
 
--- Retención wallet_transactions (30 días)
-SELECT add_retention_policy('wallet_transactions', INTERVAL '30 days',
-    if_not_exists => true);
+    ELSIF p_tx_type = 'sell' THEN
+        -- VENTA
+        SELECT 
+            current_balance,
+            avg_buy_price,
+            avg_sell_price,
+            total_sold
+        INTO 
+            v_current_balance,
+            v_avg_buy_price,
+            v_avg_sell_price,
+            v_total_sold
+        FROM wallet_positions
+        WHERE position_id = v_position_id;
 
-\echo '  ✓ Retención configurada: wallet_transactions (30 días)'
-\echo ''
+        -- Calcular P&L realizado de esta venta
+        IF v_avg_buy_price IS NOT NULL AND v_avg_buy_price > 0 THEN
+            v_realized_pnl := (p_price - v_avg_buy_price) * p_token_amount;
+        ELSE
+            v_realized_pnl := 0;
+        END IF;
 
--- ============================================================================
--- SECCIÓN 5: CONTINUOUS AGGREGATES
--- ============================================================================
+        -- Calcular nuevo precio promedio de venta
+        IF v_total_sold > 0 THEN
+            v_avg_sell_price := (
+                (v_avg_sell_price * v_total_sold) + (p_price * p_token_amount)
+            ) / (v_total_sold + p_token_amount);
+        ELSE
+            v_avg_sell_price := p_price;
+        END IF;
 
-\echo '📊 Creando continuous aggregates...'
+        -- Actualizar posición
+        UPDATE wallet_positions
+        SET
+            total_sold = total_sold + p_token_amount,
+            current_balance = current_balance - p_token_amount,
+            avg_sell_price = v_avg_sell_price,
+            realized_pnl = realized_pnl + v_realized_pnl,
+            last_sell = p_time,
+            status = CASE
+                WHEN (current_balance - p_token_amount) <= 0 THEN 'closed'
+                ELSE 'open'
+            END
+        WHERE position_id = v_position_id;
 
--- 5.1 token_hourly_stats
-\echo '  → Creando token_hourly_stats...'
-CREATE MATERIALIZED VIEW IF NOT EXISTS token_hourly_stats
-WITH (timescaledb.continuous) AS
-SELECT
-    token_id,
-    time_bucket('1 hour', time)           AS hour,
-    first(price, time)                    AS open_price,
-    last(price, time)                     AS close_price,
-    max(price)                            AS high_price,
-    min(price)                            AS low_price,
-    avg(volume_24h)                       AS avg_volume,
-    max(holders_count)                    AS max_holders
-FROM token_metrics
-GROUP BY token_id, time_bucket('1 hour', time)
-WITH NO DATA;
+        -- Actualizar wallet P&L
+        UPDATE wallets
+        SET
+            total_realized = total_realized + p_sol_amount,
+            total_profit_loss = total_profit_loss + v_realized_pnl
+        WHERE wallet_id = v_wallet_id;
 
--- Agregar política de refresh
-SELECT add_continuous_aggregate_policy('token_hourly_stats',
-    start_offset  => INTERVAL '1 day',
-    end_offset    => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '1 hour',
-    if_not_exists => true);
+    END IF;
 
-\echo '  ✓ token_hourly_stats creado'
+    -- 6. Actualizar estadísticas del wallet
+    UPDATE wallets
+    SET
+        total_trades = total_trades + 1,
+        total_invested = CASE
+            WHEN p_tx_type = 'buy' THEN total_invested + p_sol_amount
+            ELSE total_invested
+        END,
+        best_trade = CASE
+            WHEN p_tx_type = 'sell' AND v_realized_pnl > best_trade THEN v_realized_pnl
+            ELSE best_trade
+        END,
+        worst_trade = CASE
+            WHEN p_tx_type = 'sell' AND v_realized_pnl < worst_trade THEN v_realized_pnl
+            ELSE worst_trade
+        END,
+        last_seen = p_time
+    WHERE wallet_id = v_wallet_id;
 
--- 5.2 token_volume_hourly
-\echo '  → Creando token_volume_hourly...'
-CREATE MATERIALIZED VIEW IF NOT EXISTS token_volume_hourly
-WITH (timescaledb.continuous) AS
-SELECT
-    token_id,
-    time_bucket('1 hour', time)           AS hour,
-    avg(price)                            AS avg_price,
-    sum(volume_10m)                       AS total_volume_10m,
-    max(market_cap)                       AS max_market_cap
-FROM token_metrics
-GROUP BY token_id, time_bucket('1 hour', time)
-WITH NO DATA;
+    -- 7. Calcular win rate
+    UPDATE wallets w
+    SET win_rate = (
+        SELECT
+            CASE
+                WHEN COUNT(*) > 0 THEN
+                    (COUNT(*) FILTER (WHERE realized_pnl > 0)::NUMERIC / COUNT(*)::NUMERIC * 100)
+                ELSE 0
+            END
+        FROM wallet_positions
+        WHERE wallet_id = w.wallet_id
+        AND status = 'closed'
+    ),
+    avg_profit_per_trade = (
+        SELECT AVG(realized_pnl)
+        FROM wallet_positions
+        WHERE wallet_id = w.wallet_id
+        AND status = 'closed'
+    )
+    WHERE w.wallet_id = v_wallet_id;
 
--- Agregar política de refresh
-SELECT add_continuous_aggregate_policy('token_volume_hourly',
-    start_offset  => INTERVAL '1 day',
-    end_offset    => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '1 hour',
-    if_not_exists => true);
+END;
+$$ LANGUAGE plpgsql;
 
-\echo '  ✓ token_volume_hourly creado'
-\echo ''
-
--- ============================================================================
--- SECCIÓN 6: VISTAS
--- ============================================================================
-
-\echo '👁️  Creando vistas...'
-
--- Vista active_positions
-\echo '  → Creando active_positions...'
-CREATE OR REPLACE VIEW active_positions AS
-SELECT
-    wp.position_id,
-    w.wallet_address,
-    t.mint_address,
-    t.name           AS token_name,
-    t.symbol         AS token_symbol,
-    wp.current_balance,
-    wp.avg_buy_price,
-    wp.total_cost,
-    wp.unrealized_pnl,
-    wp.first_buy,
-    wp.last_buy,
-    tm.price         AS current_price,
-    wp.unrealized_roi_percentage
-FROM wallet_positions wp
-JOIN wallets w  ON w.wallet_id  = wp.wallet_id
-JOIN tokens  t  ON t.token_id   = wp.token_id
-LEFT JOIN LATERAL (
-    SELECT price FROM token_metrics
-    WHERE token_id = wp.token_id
-    ORDER BY time DESC LIMIT 1
-) tm ON true
-WHERE wp.status = 'open';
-
-\echo '  ✓ active_positions creado'
-\echo ''
-
--- ============================================================================
--- RESUMEN FINAL
--- ============================================================================
-
-\echo '✅ Setup completado exitosamente!'
-\echo ''
-\echo '📊 Resumen de objetos creados:'
-\echo ''
-
-SELECT 
-    'Tablas base' AS tipo,
-    COUNT(*) AS cantidad
-FROM information_schema.tables
-WHERE table_schema = 'public' 
-  AND table_type = 'BASE TABLE'
-  AND table_name NOT LIKE '_timescaledb%'
-UNION ALL
-SELECT 
-    'Hypertables',
-    COUNT(*)
-FROM timescaledb_information.hypertables
-UNION ALL
-SELECT 
-    'Continuous Aggregates',
-    COUNT(*)
-FROM timescaledb_information.continuous_aggregates
-UNION ALL
-SELECT 
-    'Vistas',
-    COUNT(*)
-FROM information_schema.views
-WHERE table_schema = 'public'
-  AND table_name NOT LIKE '_timescaledb%';
-
-\echo ''
-\echo '🔧 Políticas activas:'
-\echo ''
-
-SELECT 
-    proc_name AS politica,
-    hypertable_name AS tabla,
-    schedule_interval AS intervalo
-FROM timescaledb_information.jobs
-WHERE hypertable_name IS NOT NULL
-ORDER BY hypertable_name, proc_name;
-
-\echo ''
-\echo '🎯 Base de datos lista para usar!'
-\echo ''
+-- ============================================================
+-- FIN DEL SCHEMA
+-- ============================================================
