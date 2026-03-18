@@ -10,13 +10,7 @@ from datetime import datetime, timedelta
 import argparse
 import sys
 
-DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "database": "memecoins_db",
-    "user": "postgres",
-    "password": "12345"
-}
+from shared_config import DB_CONFIG
 
 
 def connect_db():

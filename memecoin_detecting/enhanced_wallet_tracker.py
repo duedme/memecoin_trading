@@ -749,14 +749,6 @@ class EnhancedWalletTracker:
 
 
 if __name__ == "__main__":
-    DB_CONFIG = {
-        'host': 'localhost',
-        'port': 5432,
-        'database': 'memecoins_db',
-        'user': 'postgres',
-        'password': '12345'
-    }
-    RPC_URL = "http://127.0.0.1:7211"
+    from shared_config import DB_CONFIG, LOCAL_RPC_URL
 
-    tracker = EnhancedWalletTracker(DB_CONFIG, RPC_URL)
-    tracker.run(reload_interval_minutes=30, cycle_interval_seconds=60)
+    tracker = EnhancedWalletTracker(DB_CONFIG, rpc_url=LOCAL_RPC_URL)

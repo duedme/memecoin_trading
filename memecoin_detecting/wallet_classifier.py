@@ -21,13 +21,7 @@ import argparse
 import logging
 from datetime import datetime
 
-DB_CONFIG = {
-    'host': 'localhost',
-    'port': 5432,
-    'database': 'memecoins_db',
-    'user': 'postgres',
-    'password': '12345'
-}
+from shared_config import DB_CONFIG
 
 logging.basicConfig(
     level=logging.INFO,

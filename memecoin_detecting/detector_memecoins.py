@@ -1,27 +1,50 @@
 #!/usr/bin/env python3
 """
-detector_memecoins.py - Sistema completo de detección de memecoins
-Monitorea 12 AMMs en Solana usando nodo RPC local + PostgreSQL/TimescaleDB
+detector_memecoins.py - Detector de memecoins via polling RPC
+v3: MODO BACKUP - Webhooks son el canal primario de detección.
+    Este script ahora corre cada 60s como respaldo (antes: cada 5s).
 
-Uso:
-    python detector_memecoins.py
-
-Requisitos:
-    pip install psycopg2-binary requests
-
-Autor: Proyecto Memecoins Solana
-Fecha: Febrero 2026
+Cambios v3:
+  - shared_config: DB + AMMs desde .env
+  - POLL_INTERVAL: 60s (antes 5s) → 12x menos llamadas
+  - Columnas SQL corregidas (sin 'uri' si no existe en schema)
 """
 
-import requests
-import json
-import time
-import logging
-import threading
 import psycopg2
 from psycopg2.extras import execute_values
+import time
 from datetime import datetime
-from collections import defaultdict
+import logging
+from typing import List, Dict, Optional
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from shared_config import (
+    DB_CONFIG, AMM_PROGRAMS, AMM_ADDRESSES,
+    LOCAL_RPC_URL, KNOWN_TOKEN_BLACKLIST, SKIP_PROGRAMS
+)
+from rpc_helpers import SolanaRPC, parse_swap_transaction
+
+# ─────────────────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.handlers.clear()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+fh = logging.FileHandler('detector_memecoins.log')
+fh.setFormatter(formatter)
+sh = logging.StreamHandler()
+sh.setFormatter(formatter)
+logger.addHandler(fh)
+logger.addHandler(sh)
+logger.propagate = False
+
+# ─────────────────────────────────────────────────────────
+# MODO BACKUP: 60s en vez de 5s (webhooks son primarios)
+# ─────────────────────────────────────────────────────────
+POLL_INTERVAL = 60  # Antes: 5 → Ahora: 60 (12x menos llamadas)
 
 # ========================================
 # CONFIGURACIÓN
@@ -175,7 +198,7 @@ class DatabaseManager:
                 cur.execute("""
                     INSERT INTO tokens (
                         mint_address, name, symbol, total_supply, decimals,
-                        uri, image_url, amm, created_at, creation_signature,
+                        image_url, amm, created_at, creation_signature,
                         creation_instruction
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (mint_address) DO NOTHING
@@ -186,7 +209,6 @@ class DatabaseManager:
                     token_data.get('symbol'),
                     token_data.get('total_supply'),
                     token_data.get('decimals'),
-                    token_data.get('uri'),
                     token_data.get('image_url'),
                     token_data.get('amm'),
                     token_data.get('created_at'),
@@ -460,7 +482,7 @@ class AMMMonitor:
                 time.sleep(POLLING_INTERVAL)
             except Exception as e:
                 logger.error(f"❌ Error en {self.amm_info['name']}: {e}")
-                time.sleep(5)
+                time.sleep(POLL_INTERVAL)
 
     def start(self):
         """Inicia el thread del monitor"""
@@ -599,5 +621,15 @@ class MemecoinsDetector:
 # ========================================
 
 if __name__ == "__main__":
-    detector = MemecoinsDetector()
+    logger.info("=" * 70)
+    logger.info("🔍 DETECTOR MEMECOINS v3 — MODO BACKUP")
+    logger.info(f"   Intervalo: {POLL_INTERVAL}s (webhooks son primarios)")
+    logger.info(f"   AMMs: {len(AMM_PROGRAMS)}")
+    logger.info(f"   RPC: {LOCAL_RPC_URL}")
+    logger.info("=" * 70)
+
+    detector = MemeDetector(
+        db_config=DB_CONFIG,
+        rpc_url=LOCAL_RPC_URL,
+    )
     detector.run()
