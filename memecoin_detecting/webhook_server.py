@@ -2,12 +2,15 @@
 """
 webhook_server.py
 Servidor de webhooks para recibir eventos de Helius en tiempo real
-VERSIÓN CORREGIDA - Fixes aplicados:
+
+VERSIÓN CORREGIDA v2:
+  - load_dotenv() al inicio
+  - DB_CONFIG desde variables de entorno (no hardcodeado)
+  - AMM_PROGRAMS completo (12 AMMs, no 3)
+  - authHeader fix: compara sin prefijo Bearer
   - Nombres de columnas SQL corregidos (snake_case)
-  - authHeader fix: compara sin prefijo "Bearer"
   - process_wallet_transaction() implementada completamente
   - Connection pooling con psycopg2.pool
-  - Manejo de errores mejorado
 """
 
 import os
@@ -18,40 +21,88 @@ from aiohttp import web
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import execute_values
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ============================================================
-# CONFIGURACIÓN
+# LOGGING
 # ============================================================
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/home/rebelforce/scripts/memecoin_detecting/webhook_server.log'),
+        logging.FileHandler('webhook_server.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-# Variables de entorno
-WEBHOOK_AUTH_TOKEN = os.getenv("WEBHOOK_AUTH_TOKEN", "tu_token_secreto_aqui")
-WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8765"))
-
-# Configuración de base de datos
+# ============================================================
+# CONFIGURACIÓN DESDE .env
+# ============================================================
 DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "database": "memecoins_db",
-    "user": "postgres",
-    "password": "12345"
+    "host": os.getenv("DB_HOST", "localhost"),
+    "port": int(os.getenv("DB_PORT", 5432)),
+    "database": os.getenv("DB_NAME", "memecoins_db"),
+    "user": os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASSWORD", ""),
 }
 
-# Connection pool global
-db_pool = None
+WEBHOOK_AUTH_TOKEN = os.getenv("WEBHOOK_AUTH_TOKEN", "")
+WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", 8765))
 
 # ============================================================
-# INICIALIZACIÓN DE CONNECTION POOL
+# 12 AMM PROGRAMS (COMPLETO - antes solo tenía 3)
 # ============================================================
+AMM_PROGRAMS = {
+    "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun",
+    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": "PumpSwap",
+    "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK": "Raydium AMM",
+    "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj": "Raydium LaunchLab",
+    "FLUXubRmkEi2q6K3Y9kBPg9248ggaZVsoSFhtJHSrm1X": "FluxBeam",
+    "HEAVENoP2qxoeuF8Dj2oT1GHEnu49U5mJYkdeC8BAX2o": "HeavenDEX",
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo": "Meteora DLMM",
+    "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG": "Meteora DYN2",
+    "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB": "Meteora DYN",
+    "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN": "Meteora DBC",
+    "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG": "Moonit",
+    "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc": "Orca",
+}
+
+KNOWN_TOKEN_BLACKLIST = {
+    "So11111111111111111111111111111111111111112",      # WSOL
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",   # USDT
+    "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",   # RAY
+    "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",    # mSOL
+}
+
+SKIP_PROGRAMS = {
+    "11111111111111111111111111111111",
+    "ComputeBudget111111111111111111111111111111",
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+}
+
+# ============================================================
+# ESTADÍSTICAS
+# ============================================================
+stats = {
+    "tokens_received": 0,
+    "tokens_saved": 0,
+    "wallets_received": 0,
+    "wallets_processed": 0,
+    "errors": 0,
+    "started_at": datetime.now().isoformat(),
+}
+
+# ============================================================
+# CONNECTION POOL
+# ============================================================
+db_pool = None
+
 
 def init_db_pool():
     """Inicializa el pool de conexiones"""
@@ -60,407 +111,342 @@ def init_db_pool():
         db_pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=2,
             maxconn=10,
-            host=DB_CONFIG['host'],
-            port=DB_CONFIG['port'],
-            database=DB_CONFIG['database'],
-            user=DB_CONFIG['user'],
-            password=DB_CONFIG['password']
+            host=DB_CONFIG["host"],
+            port=DB_CONFIG["port"],
+            database=DB_CONFIG["database"],
+            user=DB_CONFIG["user"],
+            password=DB_CONFIG["password"],
         )
         logger.info("✓ Connection pool inicializado (2-10 conexiones)")
     except Exception as e:
-        logger.error(f"❌ Error inicializando connection pool: {e}")
+        logger.error(f"Error inicializando connection pool: {e}")
         raise
+
 
 def get_db_connection():
     """Obtiene una conexión del pool"""
     return db_pool.getconn()
 
+
 def return_db_connection(conn):
     """Devuelve una conexión al pool"""
     db_pool.putconn(conn)
 
+
 # ============================================================
 # MIDDLEWARE DE AUTENTICACIÓN
 # ============================================================
-
 @web.middleware
 async def auth_middleware(request, handler):
     """Valida el token de autenticación en cada request"""
-    
-    # Permitir health check sin autenticación
-    if request.path == '/health':
+    if request.path == "/health":
         return await handler(request)
-    
-    # Validar Authorization header
-    auth_header = request.headers.get('Authorization')
-    
-    if not auth_header:
-        logger.warning(f"Request sin Authorization header desde {request.remote}")
-        return web.json_response(
-            {"error": "Missing Authorization header"},
-            status=401
-        )
-    
-    # FIX: Helius envía solo el token (sin "Bearer "), así que comparamos directo
-    if auth_header != WEBHOOK_AUTH_TOKEN:
-        logger.warning(f"Token inválido desde {request.remote}")
-        return web.json_response(
-            {"error": "Invalid token"},
-            status=401
-        )
-    
+
+    if WEBHOOK_AUTH_TOKEN:
+        auth_header = request.headers.get("Authorization", "")
+        # FIX: Helius envía authHeader tal cual (sin prefijo Bearer)
+        # Comparamos directo contra el token configurado
+        if auth_header != WEBHOOK_AUTH_TOKEN:
+            logger.warning(f"⚠ Auth fallida desde {request.remote}: got '{auth_header[:20]}...'")
+            return web.Response(status=401, text="Unauthorized")
+
     return await handler(request)
+
+
+# ============================================================
+# HANDLERS
+# ============================================================
+async def health_check(request):
+    """Health check endpoint"""
+    return web.json_response({
+        "status": "healthy",
+        "stats": stats,
+        "amm_count": len(AMM_PROGRAMS),
+    })
+
+
+async def webhook_handler(request):
+    """
+    Handler principal para eventos de Helius.
+    Recibe enhanced transactions y las clasifica como:
+    - Creación de token (si involucra un AMM conocido y hay tokenTransfers nuevos)
+    - Transacción de wallet (si el feePayer es un wallet rastreado)
+    """
+    try:
+        payload = await request.json()
+        transactions = payload if isinstance(payload, list) else [payload]
+
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+
+            for tx in transactions:
+                try:
+                    # Intentar procesar como creación de token
+                    token_saved = process_token_creation(cursor, tx)
+                    if token_saved:
+                        stats["tokens_received"] += 1
+                        continue
+
+                    # Si no es token nuevo, intentar como wallet transaction
+                    wallet_processed = process_wallet_transaction(conn, cursor, tx)
+                    if wallet_processed:
+                        stats["wallets_received"] += 1
+
+                except Exception as e:
+                    logger.error(f"Error procesando tx individual: {e}")
+                    stats["errors"] += 1
+                    conn.rollback()
+                    continue
+
+            conn.commit()
+            cursor.close()
+        finally:
+            return_db_connection(conn)
+
+        return web.Response(status=200, text="OK")
+
+    except Exception as e:
+        logger.error(f"Error en webhook_handler: {e}")
+        stats["errors"] += 1
+        return web.Response(status=500, text=str(e))
+
 
 # ============================================================
 # PROCESAMIENTO DE TOKENS
 # ============================================================
+def process_token_creation(cursor, tx):
+    """
+    Procesa evento de creación de token desde webhook Enhanced de Helius.
+    Retorna True si se guardó un token nuevo, False si no aplica.
+    """
+    signature = tx.get("signature", "")
+    timestamp_val = tx.get("timestamp", 0)
 
-def process_token_creation(event_data: dict) -> bool:
-    """
-    Procesa un evento TOKEN_CREATION de Helius
-    FIX: Usa nombres de columnas correctos (snake_case)
-    """
-    conn = None
-    try:
-        # Extraer datos del evento
-        mint_address = event_data.get('mint')
-        signature = event_data.get('signature')
-        timestamp = event_data.get('timestamp')
-        
-        if not mint_address or not signature:
-            logger.error("Evento TOKEN_CREATION sin mint o signature")
-            return False
-        
-        # Convertir timestamp Unix a datetime
-        if timestamp:
-            created_at = datetime.fromtimestamp(timestamp)
-        else:
-            created_at = datetime.now()
-        
-        detected_at = datetime.now()
-        
-        # Extraer metadata si existe (usualmente NULL en TOKEN_CREATION)
-        token_transfers = event_data.get('tokenTransfers', [])
-        name = None
-        symbol = None
-        decimals = 9  # Default para SPL tokens
-        total_supply = None
-        
-        if token_transfers:
-            first_transfer = token_transfers[0]
-            decimals = first_transfer.get('decimals', 9)
-            # Nota: name y symbol usualmente vienen NULL en TOKEN_CREATION
-            # Se enriquecen después con getAsset de Helius DAS
-        
-        # Determinar AMM desde las cuentas involucradas
-        amm = 'unknown'
-        accounts = event_data.get('accountData', [])
-        
-        # Program IDs conocidos
-        amm_programs = {
-            '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P': 'pump.fun',
-            'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA': 'pumpswap',
-            'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK': 'raydium',
-        }
-        
-        for account in accounts:
-            account_addr = account.get('account')
-            if account_addr in amm_programs:
-                amm = amm_programs[account_addr]
+    # Detectar AMM involucrado revisando instructions Y accountData
+    instructions = tx.get("instructions", [])
+    account_data = tx.get("accountData", [])
+    amm_name = None
+
+    # Método 1: Buscar en instructions
+    for ix in instructions:
+        pid = ix.get("programId", "")
+        if pid in AMM_PROGRAMS:
+            amm_name = AMM_PROGRAMS[pid]
+            break
+
+    # Método 2: Buscar en accountData (algunas enhanced tx lo ponen aquí)
+    if not amm_name:
+        for acc in account_data:
+            owner = acc.get("owner", "")
+            if owner in AMM_PROGRAMS:
+                amm_name = AMM_PROGRAMS[owner]
                 break
-        
-        # Obtener conexión del pool
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # FIX: Nombres de columnas corregidos (snake_case)
-        # FIX: Incluye detected_at, creation_signature, retention_category
-        cursor.execute("""
-            INSERT INTO tokens (
-                mint_address, 
-                name, 
-                symbol, 
-                decimals, 
-                total_supply, 
-                amm, 
-                created_at, 
-                detected_at,
-                creation_signature,
-                status,
-                retention_category
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (mint_address) DO NOTHING
-            RETURNING token_id
-        """, (
-            mint_address,
-            name,
-            symbol,
-            decimals,
-            total_supply,
-            amm,
-            created_at,
-            detected_at,
-            signature,
-            'active',
-            'webhook'  # Categoría de retención para tokens desde webhook
-        ))
-        
-        result = cursor.fetchone()
-        conn.commit()
-        cursor.close()
-        
-        if result:
-            token_id = result[0]
-            logger.info(f"✅ Nuevo token guardado: {mint_address[:16]}... (ID: {token_id}, AMM: {amm})")
-            return True
-        else:
-            logger.info(f"ℹ️  Token ya existe: {mint_address[:16]}...")
-            return True
-            
-    except Exception as e:
-        logger.error(f"❌ Error procesando TOKEN_CREATION: {e}")
-        if conn:
-            conn.rollback()
+
+    if not amm_name:
         return False
-    finally:
-        if conn:
-            return_db_connection(conn)
+
+    # Extraer tokens del evento
+    token_transfers = tx.get("tokenTransfers", [])
+    if not token_transfers:
+        return False
+
+    saved_any = False
+    for transfer in token_transfers:
+        mint = transfer.get("mint", "")
+        if not mint or mint in KNOWN_TOKEN_BLACKLIST:
+            continue
+
+        token_amount = transfer.get("tokenAmount", 0)
+        decimals = transfer.get("decimals", 9)
+
+        created_at = (
+            datetime.fromtimestamp(timestamp_val)
+            if timestamp_val
+            else datetime.now()
+        )
+
+        try:
+            cursor.execute("""
+                INSERT INTO tokens (
+                    mint_address, name, symbol, total_supply, decimals,
+                    uri, image_url, amm, created_at, detected_at,
+                    creation_signature, creation_instruction,
+                    status, retention_category
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (mint_address) DO NOTHING
+                RETURNING token_id
+            """, (
+                mint,
+                None,       # name: requiere llamada adicional a metadata
+                None,       # symbol: requiere llamada adicional
+                token_amount,
+                decimals,
+                None,       # uri
+                None,       # image_url
+                amm_name,
+                created_at,
+                datetime.now(),
+                signature,
+                "webhook",
+                "active",
+                "webhook",
+            ))
+            result = cursor.fetchone()
+            if result:
+                stats["tokens_saved"] += 1
+                saved_any = True
+                logger.info(
+                    f"🆕 [WEBHOOK] Token: {mint[:16]}... en {amm_name} "
+                    f"(ID:{result[0]})"
+                )
+        except Exception as e:
+            logger.error(f"Error guardando token {mint[:16]}: {e}")
+            raise
+
+    return saved_any
+
 
 # ============================================================
-# PROCESAMIENTO DE TRANSACCIONES DE WALLET
+# PROCESAMIENTO DE WALLETS
 # ============================================================
+def process_wallet_transaction(conn, cursor, tx):
+    """
+    Procesa transacción de wallet desde webhook Enhanced de Helius.
+    Usa el stored procedure process_transaction() del sistema existente.
+    Retorna True si se procesó, False si no aplica.
+    """
+    signature = tx.get("signature", "")
+    fee_payer = tx.get("feePayer", "")
+    timestamp_val = tx.get("timestamp", 0)
 
-def process_wallet_transaction(event_data: dict) -> bool:
-    """
-    Procesa transacciones de wallets rastreados
-    FIX: Implementación completa usando la stored procedure process_transaction()
-    """
-    conn = None
+    if not fee_payer:
+        return False
+
+    # Verificar si es un wallet que estamos rastreando
+    cursor.execute(
+        "SELECT 1 FROM tracked_wallets WHERE wallet_address = %s AND is_active = TRUE",
+        (fee_payer,)
+    )
+    if not cursor.fetchone():
+        # También verificar en tabla wallets (descubiertos)
+        cursor.execute(
+            "SELECT 1 FROM wallets WHERE wallet_address = %s AND is_active = TRUE",
+            (fee_payer,)
+        )
+        if not cursor.fetchone():
+            return False
+
+    token_transfers = tx.get("tokenTransfers", [])
+    native_transfers = tx.get("nativeTransfers", [])
+
+    if not token_transfers:
+        return False
+
+    # Detectar tipo de transacción (buy/sell)
+    sol_mints = {
+        "So11111111111111111111111111111111111111112",
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    }
+
+    memecoin_mint = None
+    token_amount = 0
+    sol_amount = 0
+    tx_type = None
+
+    for transfer in token_transfers:
+        mint = transfer.get("mint", "")
+        amount = abs(float(transfer.get("tokenAmount", 0)))
+        from_account = transfer.get("fromUserAccount", "")
+        to_account = transfer.get("toUserAccount", "")
+
+        if mint in sol_mints:
+            sol_amount += amount
+            if from_account == fee_payer:
+                tx_type = "buy"
+            elif to_account == fee_payer:
+                tx_type = "sell"
+        elif mint not in KNOWN_TOKEN_BLACKLIST:
+            memecoin_mint = mint
+            token_amount += amount
+            if to_account == fee_payer:
+                tx_type = "buy"
+            elif from_account == fee_payer:
+                tx_type = "sell"
+
+    if not memecoin_mint or not tx_type:
+        return False
+
+    # Calcular SOL desde native transfers si no se detectó en token transfers
+    if sol_amount == 0:
+        for nt in native_transfers:
+            amount = abs(float(nt.get("amount", 0))) / 1_000_000_000
+            if amount > 0.0001:
+                from_acc = nt.get("fromUserAccount", "")
+                to_acc = nt.get("toUserAccount", "")
+                if from_acc == fee_payer or to_acc == fee_payer:
+                    sol_amount += amount
+
+    price = sol_amount / token_amount if token_amount > 0 else 0.0
+
+    tx_time = (
+        datetime.fromtimestamp(timestamp_val)
+        if timestamp_val
+        else datetime.now()
+    )
+
     try:
-        signature = event_data.get('signature')
-        timestamp = event_data.get('timestamp')
-        
-        if not signature:
-            logger.error("Evento sin signature")
-            return False
-        
-        # Convertir timestamp
-        if timestamp:
-            tx_time = datetime.fromtimestamp(timestamp)
-        else:
-            tx_time = datetime.now()
-        
-        # Extraer token transfers
-        token_transfers = event_data.get('tokenTransfers', [])
-        if not token_transfers:
-            logger.debug(f"Transacción {signature[:16]}... sin token transfers")
-            return True
-        
-        # Extraer native transfers (para detectar SOL)
-        native_transfers = event_data.get('nativeTransfers', [])
-        
-        # Determinar wallet, tipo de transacción, y montos
-        # Necesitamos identificar swaps (intercambios token <-> SOL)
-        
-        sol_mint = 'So11111111111111111111111111111111111111112'
-        
-        # Buscar transferencias de tokens que no sean SOL
-        memecoin_transfer = None
-        sol_amount = 0.0
-        
-        for transfer in token_transfers:
-            mint = transfer.get('mint')
-            if mint and mint != sol_mint:
-                memecoin_transfer = transfer
-                break
-        
-        if not memecoin_transfer:
-            logger.debug(f"Transacción {signature[:16]}... no es swap de memecoin")
-            return True
-        
-        # Calcular SOL involucrado desde native_transfers
-        for native in native_transfers:
-            amount = native.get('amount', 0)
-            sol_amount += amount / 1_000_000_000  # lamports a SOL
-        
-        # Extraer datos del memecoin transfer
-        mint_address = memecoin_transfer.get('mint')
-        token_amount = memecoin_transfer.get('tokenAmount', 0)
-        from_address = memecoin_transfer.get('fromUserAccount')
-        to_address = memecoin_transfer.get('toUserAccount')
-        
-        # Determinar dirección del swap
-        # Si el token sale del wallet → SELL
-        # Si el token entra al wallet → BUY
-        
-        # Obtener wallet del evento (feePayer usualmente es el wallet)
-        wallet_address = event_data.get('feePayer')
-        
-        if not wallet_address:
-            logger.error(f"No se pudo determinar wallet para tx {signature[:16]}...")
-            return False
-        
-        # Determinar tipo
-        if from_address == wallet_address:
-            tx_type = 'sell'
-        elif to_address == wallet_address:
-            tx_type = 'buy'
-        else:
-            logger.debug(f"Wallet {wallet_address[:12]}... no es origen ni destino del transfer")
-            return True
-        
-        # Calcular precio
-        if token_amount > 0:
-            price = sol_amount / token_amount
-        else:
-            price = 0.0
-        
-        # Obtener conexión del pool
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Usar la stored procedure process_transaction() del sistema existente
         cursor.execute("""
-            SELECT process_transaction(
-                %s, %s, %s, %s, %s, %s, %s, %s
-            )
+            SELECT process_transaction(%s, %s, %s, %s, %s, %s, %s, %s)
         """, (
-            wallet_address,
-            mint_address,
+            fee_payer,
+            memecoin_mint,
             signature,
             tx_type,
             token_amount,
             sol_amount,
             price,
-            tx_time
+            tx_time,
         ))
-        
         conn.commit()
-        cursor.close()
-        
+        stats["wallets_processed"] += 1
         logger.info(
-            f"{'🟢' if tx_type == 'buy' else '🔴'} {tx_type.upper()} "
-            f"{wallet_address[:12]}... {token_amount:.2f} tokens @ {price:.8f} SOL "
-            f"(Total: {sol_amount:.4f} SOL)"
+            f"{'🟢' if tx_type == 'buy' else '🔴'} [WEBHOOK] {tx_type.upper()} "
+            f"{fee_payer[:12]}... {token_amount:.2f} tokens @ {price:.8f} SOL"
         )
-        
         return True
-        
     except Exception as e:
-        logger.error(f"❌ Error procesando wallet transaction: {e}")
-        if conn:
-            conn.rollback()
+        logger.error(f"Error en process_transaction: {e}")
+        conn.rollback()
         return False
-    finally:
-        if conn:
-            return_db_connection(conn)
 
-# ============================================================
-# RUTAS HTTP
-# ============================================================
-
-async def health_check(request):
-    """Health check endpoint"""
-    return web.json_response({
-        "status": "healthy",
-        "service": "memecoin-webhook-server",
-        "timestamp": datetime.now().isoformat()
-    })
-
-async def webhook_handler(request):
-    """
-    Endpoint principal para recibir webhooks de Helius
-    POST /webhook
-    """
-    try:
-        # Parsear body JSON
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            logger.error("Body JSON inválido")
-            return web.json_response(
-                {"error": "Invalid JSON body"},
-                status=400
-            )
-        
-        # Validar estructura
-        if not isinstance(body, list):
-            logger.error("Body no es un array")
-            return web.json_response(
-                {"error": "Body must be an array of events"},
-                status=400
-            )
-        
-        # Procesar cada evento
-        events_processed = 0
-        events_failed = 0
-        
-        for event in body:
-            event_type = event.get('type')
-            
-            if event_type == 'TOKEN_CREATION':
-                if process_token_creation(event):
-                    events_processed += 1
-                else:
-                    events_failed += 1
-                    
-            elif event_type == 'SWAP':
-                # Los swaps de wallets rastreados vienen como SWAP events
-                if process_wallet_transaction(event):
-                    events_processed += 1
-                else:
-                    events_failed += 1
-                    
-            else:
-                logger.debug(f"Tipo de evento no manejado: {event_type}")
-        
-        logger.info(
-            f"📊 Batch procesado: {events_processed} OK, {events_failed} errores "
-            f"(total: {len(body)} eventos)"
-        )
-        
-        return web.json_response({
-            "status": "success",
-            "events_received": len(body),
-            "events_processed": events_processed,
-            "events_failed": events_failed
-        })
-        
-    except Exception as e:
-        logger.error(f"❌ Error en webhook_handler: {e}")
-        return web.json_response(
-            {"error": "Internal server error"},
-            status=500
-        )
 
 # ============================================================
 # INICIALIZACIÓN DEL SERVIDOR
 # ============================================================
-
 def main():
     """Inicializa y arranca el servidor"""
     logger.info("=" * 70)
-    logger.info("🚀 INICIANDO WEBHOOK SERVER")
+    logger.info("🚀 INICIANDO WEBHOOK SERVER v2")
     logger.info("=" * 70)
-    
-    # Inicializar connection pool
+    logger.info(f"  DB: {DB_CONFIG['database']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}")
+    logger.info(f"  AMMs monitoreados: {len(AMM_PROGRAMS)}")
+    for addr, name in AMM_PROGRAMS.items():
+        logger.info(f"    - {name}: {addr[:16]}...")
+
     init_db_pool()
-    
-    # Crear aplicación aiohttp
+
     app = web.Application(middlewares=[auth_middleware])
-    
-    # Registrar rutas
-    app.router.add_get('/health', health_check)
-    app.router.add_post('/webhook', webhook_handler)
-    
-    logger.info(f"✓ Rutas configuradas: GET /health, POST /webhook")
+    app.router.add_get("/health", health_check)
+    app.router.add_post("/webhook", webhook_handler)
+
+    logger.info(f"✓ Rutas: GET /health, POST /webhook")
     logger.info(f"✓ Puerto: {WEBHOOK_PORT}")
-    logger.info(f"✓ Auth token configurado: {'Sí' if WEBHOOK_AUTH_TOKEN else 'NO (INSEGURO)'}")
+    logger.info(f"✓ Auth token: {'Sí' if WEBHOOK_AUTH_TOKEN else 'NO (INSEGURO)'}")
     logger.info("=" * 70)
-    
-    # Arrancar servidor
-    web.run_app(app, host='0.0.0.0', port=WEBHOOK_PORT)
+
+    web.run_app(app, host="0.0.0.0", port=WEBHOOK_PORT)
+
 
 if __name__ == "__main__":
     main()

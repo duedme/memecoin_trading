@@ -1,3 +1,4 @@
 *log
 *backup
 repo*.txt
+.env
