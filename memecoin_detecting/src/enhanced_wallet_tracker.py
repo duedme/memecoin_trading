@@ -673,9 +673,9 @@ class EnhancedWalletTracker:
         """
         Loop principal del tracker.
         v3: Webhook-primary mode
-          - Discovery cada 3 minutos (wallets nuevos desde BD)
-          - Si webhook_primary_mode=True: NO hace tracking polling (webhooks cubren eso)
-          - Si webhook_primary_mode=False: hace tracking polling cada 60s (modo legacy)
+        - Discovery cada 3 minutos (wallets nuevos desde BD)
+        - Si webhook_primary_mode=True: NO hace tracking polling (webhooks cubren eso)
+        - Si webhook_primary_mode=False: hace tracking polling cada 60s (modo legacy)
         """
         logger.info("=" * 70)
         logger.info("🔍 ENHANCED WALLET TRACKER v3 — WEBHOOK-PRIMARY MODE")
@@ -687,8 +687,19 @@ class EnhancedWalletTracker:
 
         self.connect_db()
 
+        # ── Cargar estado desde BD (con rollback preventivo entre cada uno) ──
+        self.load_tracked_wallets()
+        self._safe_rollback()
+        self.load_discovered_wallets()
+        self._safe_rollback()
+        self.load_all_known_tokens()
+        self._safe_rollback()
+        self.load_processed_signatures()
+        self._safe_rollback()
+
         last_discovery = 0
         last_tracking_run = 0
+        cycles = 0
 
         try:
             while True:
@@ -701,24 +712,34 @@ class EnhancedWalletTracker:
                         logger.info(f"\n{'=' * 50}")
                         logger.info("🔍 DISCOVERY: Buscando wallets nuevas desde BD...")
                         logger.info(f"{'=' * 50}")
-                        self.run_discovery_cycle()
+
+                        # Recargar wallets rastreados desde BD
+                        self.load_tracked_wallets()
+                        self._safe_rollback()
+                        self.load_discovered_wallets()
+                        self._safe_rollback()
+
+                        # Descubrir wallets nuevos desde tokens recientes
+                        self.discover_wallets_from_recent_tokens()
+
+                        # Podar wallets inactivos
+                        self.prune_inactive_wallets()
+
                         last_discovery = now
 
                     # === 2. TRACKING CYCLE ===
-                    # v3: En modo webhook-primary, solo discovery. No polling continuo.
                     if not self.webhook_primary_mode:
                         elapsed_tracking = now - last_tracking_run
                         if elapsed_tracking >= 60:
                             self.run_tracking_cycle()
                             last_tracking_run = now
                     else:
-                        # Webhook mode: solo actualizamos timestamp para evitar loop innecesario
                         last_tracking_run = now
 
-                    # === 3. STATS (cada 5 min) ===
-                    self.stats["cycles"] += 1
-                    if self.stats["cycles"] % 50 == 0:  # ~5 min si sleep 5s
-                        self.log_stats()
+                    # === 3. STATS (cada ~5 min) ===
+                    cycles += 1
+                    if cycles % 60 == 0:  # ~5 min si sleep 5s
+                        self.print_stats()
 
                     # Sleep 5s entre checks
                     time.sleep(5)
@@ -730,7 +751,7 @@ class EnhancedWalletTracker:
 
                 except Exception as e:
                     logger.error(f"Error en loop principal: {e}")
-                    self.stats["errors"] += 1
+                    self.errors_count += 1
                     self._safe_rollback()
                     time.sleep(10)
 
