@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS token_metrics (
     liquidity NUMERIC(20, 4),
     volume_10m NUMERIC(20, 4) DEFAULT 0,
     swap_count INTEGER DEFAULT 0,
-    holders_count INTEGER DEFAULT 0
+    holders_count INTEGER DEFAULT 0,
+    UNIQUE(token_id, time)
 );
 
 CREATE INDEX IF NOT EXISTS idx_metrics_token_time ON token_metrics(token_id, time DESC);

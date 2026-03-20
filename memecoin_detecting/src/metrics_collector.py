@@ -328,8 +328,8 @@ class MetricsCollector:
             cursor = self.conn.cursor()
             values = [
                 (m["token_id"], m["time"], m["price"], m["market_cap"],
-                 m["fdv"], m["liquidity"], m["volume_10m"],
-                 m["swap_count"], m["holders_count"])
+                m["fdv"], m["liquidity"], m["volume_10m"],
+                m["swap_count"], m["holders_count"])
                 for m in metrics
             ]
             execute_values(
@@ -337,7 +337,8 @@ class MetricsCollector:
                 """INSERT INTO token_metrics
                     (token_id, time, price, market_cap, fdv,
                     liquidity, volume_10m, swap_count, holders_count)
-                VALUES %s""",
+                VALUES %s
+                ON CONFLICT (token_id, time) DO NOTHING""",
                 values,
             )
             self.conn.commit()
