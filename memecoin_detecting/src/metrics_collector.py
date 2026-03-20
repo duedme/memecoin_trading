@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-metrics_collector.py - Recolector de métricas OPTIMIZADO v4
+metrics_collector.py - Recolector de métricas v5
 
-CAMBIOS v4:
-  - ELIMINADO getTokenSupply (supply viene de getMultipleAccounts jsonParsed)
-  - Semáforo asyncio (30 concurrent) para respetar rate limit 50 req/s
-  - Manejo de HTTP 429 con retry + backoff
-  - Monitor interval: 600s (antes 300s) para caber en plan Developer
-  - RPC: Helius como primario (sin nodo local)
+CAMBIOS v5 (vs v4):
+- CALCULA PRECIO ON-CHAIN: lee vault + bonding curve → price_sol
+- Soporta pump.fun bonding curves (lamports = SOL reserves)
+- 2 batch calls extra por ciclo (vaults + pools) — costo mínimo
+- parse_metric ahora usa price_data con precio real
 """
 
 import os
@@ -43,13 +42,12 @@ logger.addHandler(fh)
 logger.addHandler(sh)
 logger.propagate = False
 
-# ── TIERS ──
+# ── CONSTANTES ──
 TIERS = {
     "hot":     {"max_age_hours": 1,   "interval_seconds": 15,  "collect_holders": False},
     "active":  {"max_age_hours": 24,  "interval_seconds": 60,  "collect_holders": False},
     "monitor": {"max_age_hours": 168, "interval_seconds": 600, "collect_holders": True},
 }
-
 HOLDER_REFRESH_INTERVAL = 300
 
 # ── RPC ENDPOINTS ──
@@ -68,8 +66,11 @@ for env_key, name in [
         RPC_ENDPOINTS.append({"url": url, "name": name})
 
 MAX_ACCOUNTS_PER_BATCH = 100
-MAX_CONCURRENT_RPC = 30  # de 50 req/s, dejamos 20 para detector
+MAX_CONCURRENT_RPC = 30
 MAX_429_RETRIES = 3
+
+# pump.fun bonding curve program ID
+PUMP_FUN_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 
 
 class MetricsCollector:
@@ -88,6 +89,8 @@ class MetricsCollector:
             "started_at": datetime.now().isoformat(),
         }
 
+    # ── BD ──────────────────────────────────────────────────────────────
+
     def connect_db(self):
         try:
             if self.conn and not self.conn.closed:
@@ -105,7 +108,6 @@ class MetricsCollector:
         except Exception:
             pass
 
-    # ── BD: Obtener tokens activos ──
     def get_active_tokens(self) -> Dict[str, List[dict]]:
         try:
             cursor = self.conn.cursor()
@@ -148,7 +150,8 @@ class MetricsCollector:
             self.safe_rollback()
             return {"hot": [], "active": [], "monitor": []}
 
-    # ── RPC: Call con semáforo + retry 429 + fallback ──
+    # ── RPC ─────────────────────────────────────────────────────────────
+
     async def rpc_call(self, method: str, params: list,
                        endpoint_idx: int = 0, retry_429: int = 0) -> Optional[dict]:
         if endpoint_idx >= len(RPC_ENDPOINTS):
@@ -163,7 +166,6 @@ class MetricsCollector:
                     ep["url"], json=payload,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
-                    # ── HTTP 429: Rate limited ──
                     if resp.status == 429:
                         self.stats["rpc_429s"] += 1
                         if retry_429 < MAX_429_RETRIES:
@@ -191,8 +193,8 @@ class MetricsCollector:
                 self.rpc_failures[ep["name"]] += 1
                 return await self.rpc_call(method, params, endpoint_idx + 1)
 
-    # ── RPC: Batch getMultipleAccounts ──
     async def get_multiple_accounts(self, addresses: List[str]) -> List[Optional[dict]]:
+        """Batch getMultipleAccounts con jsonParsed (para token accounts y mints)."""
         if not addresses:
             return []
         all_results = []
@@ -209,27 +211,169 @@ class MetricsCollector:
                 all_results.extend([None] * len(batch))
         return all_results
 
-    # ── RPC: getTokenLargestAccounts ──
+    async def get_multiple_accounts_raw(self, addresses: List[str]) -> List[Optional[dict]]:
+        """Batch getMultipleAccounts con base64 (para bonding curves / pools)."""
+        if not addresses:
+            return []
+        all_results = []
+        for i in range(0, len(addresses), MAX_ACCOUNTS_PER_BATCH):
+            batch = addresses[i:i + MAX_ACCOUNTS_PER_BATCH]
+            self.stats["rpc_calls_saved"] += len(batch) - 1
+            result = await self.rpc_call(
+                "getMultipleAccounts",
+                [batch, {"encoding": "base64"}],
+            )
+            if result and "value" in result:
+                all_results.extend(result["value"])
+            else:
+                all_results.extend([None] * len(batch))
+        return all_results
+
     async def get_token_largest_accounts(self, mint: str) -> Optional[list]:
         result = await self.rpc_call("getTokenLargestAccounts", [mint])
         return result.get("value") if result and "value" in result else None
 
-    # ── Recolectar métricas por tier ──
+    # ── PRECIO ON-CHAIN ────────────────────────────────────────────────
+
+    async def calculate_prices(
+        self,
+        tokens: List[dict],
+        holder_data: Dict[int, Optional[list]],
+        mint_accounts: List[Optional[dict]],
+    ) -> Dict[str, dict]:
+        """
+        Lee vaults y bonding curves para calcular precio on-chain.
+
+        Flujo:
+          holders[0].address  = vault del pool (tiene los tokens)
+          getMultipleAccounts(vaults)  → parsed.info.owner = bonding curve PDA
+          getMultipleAccounts(curves)  → lamports = SOL reserves
+
+          price_sol = (lamports / 1e9) / tokens_en_pool
+        """
+        price_data: Dict[str, dict] = {}
+
+        # ── A: extraer vault addresses y token amounts ──
+        vault_addresses: List[str] = []
+        vault_index_map: Dict[str, List[int]] = {}
+        vault_info: Dict[int, dict] = {}
+
+        for i, token in enumerate(tokens):
+            holders = holder_data.get(token["token_id"])
+            if not holders or len(holders) == 0:
+                continue
+
+            vault_addr = holders[0].get("address")
+            if not vault_addr:
+                continue
+
+            ui_amount = holders[0].get("uiAmount")
+            if ui_amount and isinstance(ui_amount, (int, float)) and float(ui_amount) > 0:
+                tokens_in_pool = float(ui_amount)
+            else:
+                raw = float(holders[0].get("amount", 0))
+                decimals = 9
+                mint_acc = mint_accounts[i] if i < len(mint_accounts) else None
+                if mint_acc and isinstance(mint_acc, dict):
+                    decimals = int(
+                        mint_acc.get("data", {}).get("parsed", {})
+                        .get("info", {}).get("decimals", 9)
+                    )
+                tokens_in_pool = raw / (10 ** decimals) if decimals > 0 else raw
+
+            if tokens_in_pool <= 0:
+                continue
+
+            vault_info[i] = {
+                "vault_addr": vault_addr,
+                "tokens_in_pool": tokens_in_pool,
+                "mint": token["mint_address"],
+            }
+            if vault_addr not in vault_index_map:
+                vault_addresses.append(vault_addr)
+                vault_index_map[vault_addr] = []
+            vault_index_map[vault_addr].append(i)
+
+        if not vault_addresses:
+            logger.info("  Precios: 0 vaults encontrados")
+            return price_data
+
+        # ── B: leer vaults → obtener owner (bonding curve PDA) ──
+        vault_accounts = await self.get_multiple_accounts(vault_addresses)
+
+        pool_addresses: List[str] = []
+        pool_index_map: Dict[str, List[int]] = {}
+
+        for j, vault_acc in enumerate(vault_accounts):
+            if not vault_acc or not isinstance(vault_acc, dict):
+                continue
+            vault_addr = vault_addresses[j]
+            parsed_info = (
+                vault_acc.get("data", {}).get("parsed", {}).get("info", {})
+            )
+            pool_addr = parsed_info.get("owner")
+            if not pool_addr:
+                continue
+
+            if pool_addr not in pool_index_map:
+                pool_addresses.append(pool_addr)
+                pool_index_map[pool_addr] = []
+            for idx in vault_index_map.get(vault_addr, []):
+                pool_index_map[pool_addr].append(idx)
+
+        if not pool_addresses:
+            logger.info("  Precios: 0 pool addresses encontrados")
+            return price_data
+
+        # ── C: leer bonding curves → lamports = SOL reserves ──
+        pool_accounts = await self.get_multiple_accounts_raw(pool_addresses)
+
+        prices_found = 0
+        for k, pool_acc in enumerate(pool_accounts):
+            if not pool_acc or not isinstance(pool_acc, dict):
+                continue
+
+            pool_addr = pool_addresses[k]
+            lamports = pool_acc.get("lamports", 0)
+            account_owner = pool_acc.get("owner", "")
+
+            # Solo pump.fun: el SOL vive en los lamports del bonding curve PDA
+            if account_owner != PUMP_FUN_PROGRAM:
+                continue
+
+            sol_reserves = lamports / 1e9
+            if sol_reserves <= 0:
+                continue
+
+            for idx in pool_index_map.get(pool_addr, []):
+                info = vault_info.get(idx)
+                if not info or info["tokens_in_pool"] <= 0:
+                    continue
+
+                price_sol = sol_reserves / info["tokens_in_pool"]
+                price_data[info["mint"]] = {
+                    "price_sol": price_sol,
+                    "liquidity_sol": sol_reserves * 2,
+                    "tokens_in_pool": info["tokens_in_pool"],
+                }
+                prices_found += 1
+
+        logger.info(f"  Precios calculados: {prices_found}/{len(tokens)} tokens")
+        return price_data
+
+    # ── RECOLECCIÓN POR TIER ───────────────────────────────────────────
+
     async def collect_tier_metrics(self, tokens: List[dict], tier_name: str):
         if not tokens:
             return
 
-        tier_cfg = TIERS[tier_name]
         logger.info(f"[{tier_name.upper()}] Recolectando {len(tokens)} tokens...")
-
         mint_addresses = [t["mint_address"] for t in tokens]
 
         # Paso 1: Batch getMultipleAccounts (incluye supply en jsonParsed)
         mint_accounts = await self.get_multiple_accounts(mint_addresses)
 
-        # Paso 2: ELIMINADO — supply viene de getMultipleAccounts
-
-        # Paso 3: Holders (con cache de 5 min)
+        # Paso 2: Holders (con cache de 5 min)
         holder_data: Dict[int, Optional[list]] = {}
         now = time.time()
         tokens_needing_holders = []
@@ -255,13 +399,16 @@ class MetricsCollector:
                     holder_data[tid] = res
                     self.holder_cache[tid] = {"data": res, "ts": now}
 
+        # Paso 3: Calcular precios on-chain (2 batch calls extra)
+        price_data = await self.calculate_prices(tokens, holder_data, mint_accounts)
+
         # Paso 4: Parse y armar métricas
         metrics_to_save = []
         for i, token in enumerate(tokens):
             try:
                 mint_acc = mint_accounts[i] if i < len(mint_accounts) else None
                 holders = holder_data.get(token["token_id"])
-                metric = self.parse_metric(token, mint_acc, holders)
+                metric = self.parse_metric(token, mint_acc, holders, price_data)
                 if metric:
                     metrics_to_save.append(metric)
             except Exception as e:
@@ -273,9 +420,11 @@ class MetricsCollector:
             self.save_metrics_batch(metrics_to_save)
             logger.info(f"  [{tier_name.upper()}] {len(metrics_to_save)} métricas guardadas")
 
-    # ── Parse: RPC → registro de métrica ──
+    # ── PARSE: RPC → registro de métrica ───────────────────────────────
+
     def parse_metric(self, token: dict, mintaccount: Optional[dict],
-                     holders: Optional[list]) -> Optional[dict]:
+                     holders: Optional[list],
+                     price_data: Dict[str, dict] = None) -> Optional[dict]:
         try:
             # Supply desde getMultipleAccounts (jsonParsed)
             total_supply = 0.0
@@ -293,27 +442,22 @@ class MetricsCollector:
 
             # Holder concentration
             holder_count = 0
-            top10_pct = 0.0
             if holders and isinstance(holders, list):
                 holder_count = len(holders)
-                if total_supply > 0:
-                    top10_sum = 0.0
-                    for h in holders[:10]:
-                        ui = h.get("uiAmount")
-                        if ui and isinstance(ui, (int, float)):
-                            top10_sum += float(ui)
-                        else:
-                            raw = float(h.get("amount", 0))
-                            top10_sum += raw / (10 ** decimals)
-                    top10_pct = min((top10_sum / total_supply) * 100, 100.0)
+
+            # Precio on-chain
+            pd = (price_data or {}).get(token["mint_address"], {})
+            price_sol = pd.get("price_sol", 0.0)
+            liquidity_sol = pd.get("liquidity_sol", 0.0)
+            market_cap = price_sol * total_supply if total_supply > 0 else 0.0
 
             return {
                 "token_id": token["token_id"],
                 "time": datetime.now(),
-                "price": 0.0,
-                "market_cap": 0.0,
-                "fdv": 0.0,
-                "liquidity": 0.0,
+                "price": price_sol,
+                "market_cap": market_cap,
+                "fdv": market_cap,
+                "liquidity": liquidity_sol,
                 "volume_10m": 0.0,
                 "swap_count": 0,
                 "holders_count": holder_count,
@@ -322,20 +466,21 @@ class MetricsCollector:
             logger.debug(f"parse_metric error: {e}")
             return None
 
-    # ── BD: Bulk INSERT ──
+    # ── BD: Bulk INSERT ────────────────────────────────────────────────
+
     def save_metrics_batch(self, metrics: List[dict]):
         try:
             cursor = self.conn.cursor()
             values = [
                 (m["token_id"], m["time"], m["price"], m["market_cap"],
-                m["fdv"], m["liquidity"], m["volume_10m"],
-                m["swap_count"], m["holders_count"])
+                 m["fdv"], m["liquidity"], m["volume_10m"],
+                 m["swap_count"], m["holders_count"])
                 for m in metrics
             ]
             execute_values(
                 cursor,
                 """INSERT INTO token_metrics
-                    (token_id, time, price, market_cap, fdv,
+                   (token_id, time, price, market_cap, fdv,
                     liquidity, volume_10m, swap_count, holders_count)
                 VALUES %s
                 ON CONFLICT (token_id, time) DO NOTHING""",
@@ -349,7 +494,8 @@ class MetricsCollector:
             self.safe_rollback()
             self.stats["errors"] += 1
 
-    # ── Stats ──
+    # ── STATS ──────────────────────────────────────────────────────────
+
     def log_stats(self):
         made = self.stats["rpc_calls_made"]
         saved = self.stats["rpc_calls_saved"]
@@ -367,10 +513,11 @@ class MetricsCollector:
             fails = self.rpc_failures.get(name, 0)
             logger.info(f"  {name}: avg={avg:.3f}s, fails={fails}")
 
-    # ── Main loop ──
+    # ── MAIN LOOP ──────────────────────────────────────────────────────
+
     async def run(self):
         logger.info("=" * 70)
-        logger.info("METRICS COLLECTOR v4 — sin getTokenSupply + semáforo + 429 retry")
+        logger.info("METRICS COLLECTOR v5 — precio on-chain + semáforo + 429 retry")
         logger.info("=" * 70)
         logger.info(f"DB: {DB_CONFIG['database']}@{DB_CONFIG['host']}")
         logger.info(f"RPC endpoints: {len(RPC_ENDPOINTS)}")
