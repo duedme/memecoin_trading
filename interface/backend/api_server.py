@@ -7,16 +7,17 @@ from flask_cors import CORS
 import psycopg2
 import psycopg2.extras
 from datetime import datetime
+import os
 
 app = Flask(__name__)
 CORS(app)
 
 DB_CONFIG = {
-    'host': 'localhost',
-    'port': 5432,
-    'database': 'memecoins_db',
-    'user': 'postgres',
-    'password': '12345'
+    'host': os.getenv('DB_HOST'),
+    'port': int(os.getenv('DB_PORT')),
+    'database': os.getenv('DB_NAME'),
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
 }
 
 def get_db():

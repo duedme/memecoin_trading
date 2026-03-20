@@ -75,5 +75,20 @@ services:
         condition: service_healthy
     command: ["python3", "enhanced_wallet_tracker.py"]
 
+#-----Backend----
+  api-server:
+    build:
+      context: ./interface/backend
+      dockerfile: Dockerfile
+    restart: always
+    env_file: ./memecoin_detecting/.env
+    environment:
+      - DB_HOST=db
+    ports:
+      - "8200:8200"
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
