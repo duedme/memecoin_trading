@@ -24,9 +24,9 @@ load_dotenv()
 # ============================================================
 # CONFIGURACIÓN DESDE .env
 # ============================================================
-HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://tu-dominio.com/webhook")
-WEBHOOK_AUTH_TOKEN = os.getenv("WEBHOOK_AUTH_TOKEN", "")
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_AUTH_TOKEN = os.getenv("WEBHOOK_AUTH_TOKEN")
 
 # FIX CRÍTICO: Endpoint correcto (antes usaba api.helius.xyz)
 HELIUS_WEBHOOK_API = f"https://api-mainnet.helius-rpc.com/v0/webhooks?api-key={HELIUS_API_KEY}"
