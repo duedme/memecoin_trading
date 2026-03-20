@@ -14,11 +14,11 @@ load_dotenv()
 # BASE DE DATOS
 # ============================================================
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "port": int(os.getenv("DB_PORT", 5432)),
-    "database": os.getenv("DB_NAME", "memecoins_db"),
-    "user": os.getenv("DB_USER", "postgres"),
-    "password": os.getenv("DB_PASSWORD", ""),
+    "host": os.getenv("DB_HOST"),
+    "port": int(os.getenv("DB_PORT")),
+    "database": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
 }
 
 # ============================================================
@@ -29,7 +29,7 @@ LOCAL_RPC_URL = os.getenv("LOCAL_RPC_URL", "http://127.0.0.1:7211")
 # ============================================================
 # HELIUS
 # ============================================================
-HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 HELIUS_WEBHOOK_API = f"https://api-mainnet.helius-rpc.com/v0/webhooks?api-key={HELIUS_API_KEY}"
 HELIUS_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 
