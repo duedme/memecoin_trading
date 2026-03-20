@@ -744,8 +744,8 @@ class EnhancedWalletTracker:
 
 
 
-
 if __name__ == "__main__":
     from shared_config import DB_CONFIG, LOCAL_RPC_URL, HELIUS_RPC_URL
     rpc_url = HELIUS_RPC_URL if HELIUS_RPC_URL and "api-key" in HELIUS_RPC_URL else LOCAL_RPC_URL
     tracker = EnhancedWalletTracker(DB_CONFIG, rpc_url=rpc_url)
+    tracker.run()
