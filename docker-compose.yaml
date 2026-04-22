@@ -71,7 +71,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: sh -c "while true; do python3 walletclassifier.py; sleep 1800; done"
+    volumes:
+    - /var/log/memecoin:/var/log/memecoin
+    command: sh -c "while true; do python3 wallet_classifier.py >> /var/log/memecoin/wallet_classifier.log 2>&1; sleep 1800; done"
 
 #-----Backend----
   api-server:
