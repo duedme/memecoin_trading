@@ -20,7 +20,7 @@ services:
       timeout: 3s
       retries: 5
 
-#-----Servidor de webhooks---
+#-----Servidor---
   detector:
     build:
       context: ./memecoin_detecting
