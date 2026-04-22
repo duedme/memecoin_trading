@@ -75,6 +75,19 @@ services:
         condition: service_healthy
     command: ["python3", "enhanced_wallet_tracker.py"]
 
+  wallet_classifier:
+    build:
+      context: ./memecoin_detecting
+      dockerfile: docker/Dockerfile
+    restart: always
+    env_file: ./memecoin_detecting/.env
+    environment:
+      - DB_HOST=db
+    depends_on:
+      db:
+        condition: service_healthy
+    command: sh -c "while true; do python3 walletclassifier.py; sleep 1800; done"
+
 #-----Backend----
   api-server:
     build:
