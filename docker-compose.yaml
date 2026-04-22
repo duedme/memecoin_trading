@@ -21,21 +21,6 @@ services:
       retries: 5
 
 #-----Servidor de webhooks---
-  webhook-server:
-    build:
-      context: ./memecoin_detecting
-      dockerfile: docker/Dockerfile
-    restart: always
-    env_file: ./memecoin_detecting/.env
-    environment:
-      - DB_HOST=db
-    ports:
-      - "${WEBHOOK_PORT:-8765}:${WEBHOOK_PORT:-8765}"
-    depends_on:
-      db:
-        condition: service_healthy
-    command: ["python3", "webhook_server.py"]
-
   detector:
     build:
       context: ./memecoin_detecting
