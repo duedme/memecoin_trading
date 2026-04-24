@@ -2,12 +2,13 @@
 set -uo pipefail
 
 # ──────────────────────────────────────────────────────────────
-#  Solana RPC Node Restart Script
-#  - snapshot-finder con versión fija (evita bug 'str' object)
-#  - wget como fallback (más estable que aria2c en nuestra red)
-#  - Validación real del snapshot con tar -tf
-#  - Reutiliza full snapshot hasta 24h; solo re-baja incremental
-#  - NO arranca validator si no hay snapshot válido
+#  Solana RPC Node Restart Script — v5
+#  Cambios vs v4:
+#  - Elimina snapshot-finder (Docker) por bug 'str' object
+#  - Elimina wget a mirrors externos (todos fallan desde esta IP)
+#  - Usa download-snapshot.sh propio (bash + aria2c, 1 peer)
+#  - Mantiene: reuso de full hasta 24h, validación tar -tf,
+#    NO arranca validator si no hay snapshot válido
 # ──────────────────────────────────────────────────────────────
 
 LOG_FILE="/var/log/solana-restart.log"
@@ -16,25 +17,22 @@ ACCOUNTS_DIR="/mnt/accounts"
 LEDGER_DIR="/mnt/ledger"
 SERVICE_NAME="solv.service"
 LOCKFILE="/tmp/solana-restart.lock"
+DOWNLOADER="/etc/solana/download-snapshot.sh"
 
 # Edad máxima del full snapshot antes de re-descargarlo (horas)
 FULL_MAX_AGE_HOURS=24
-# Tamaño mínimo aceptable para un full snapshot (bytes) — ~100 MB
+# Tamaño mínimo aceptable para un full snapshot (MB)
 FULL_MIN_SIZE_MB=100
-# Tamaño mínimo aceptable para incremental (bytes) — ~1 MB
+# Tamaño mínimo aceptable para incremental (MB)
 INCR_MIN_SIZE_MB=1
-
-# Mirrors para fallback (wget)
-MIRRORS=(
-  "https://snapshots.avorio.network/mainnet-beta"
-  "https://solana-snapshot.mainnet.rpcpool.com"
-)
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | $1" | tee -a "$LOG_FILE"
 }
 
-# ── Lockfile ──
+# ══════════════════════════════════════════════════════════════
+#  Lockfile
+# ══════════════════════════════════════════════════════════════
 if [ -f "$LOCKFILE" ]; then
   OTHER_PID=$(cat "$LOCKFILE" 2>/dev/null || true)
   if kill -0 "$OTHER_PID" 2>/dev/null; then
@@ -79,6 +77,7 @@ sudo rm -rf "${LEDGER_DIR:?}"/accounts_snapshot
 sudo rm -f  "${SNAPSHOT_DIR:?}"/*.aria2
 sudo rm -f  "${SNAPSHOT_DIR:?}"/tmp-*
 sudo rm -f  "${SNAPSHOT_DIR:?}"/snapshot-finder.log
+sudo rm -f  "${SNAPSHOT_DIR:?}"/wget-log*
 sudo rm -f  "${SNAPSHOT_DIR:?}"/incremental-snapshot-*.tar.bz2
 sudo rm -f  "${SNAPSHOT_DIR:?}"/incremental-snapshot-*.tar.zst
 
@@ -108,7 +107,7 @@ fi
 log "Cleanup done."
 
 # ══════════════════════════════════════════════════════════════
-#  Función: validar un full snapshot en el directorio
+#  Funciones de validación
 # ══════════════════════════════════════════════════════════════
 validate_full_snapshot() {
   local f
@@ -131,103 +130,49 @@ validate_incremental_snapshot() {
 }
 
 # ══════════════════════════════════════════════════════════════
-#  Step 3: Descargar snapshot
+#  Step 3: Descargar snapshot (si no reusamos full)
 # ══════════════════════════════════════════════════════════════
 log "Step 3: Downloading fresh snapshot..."
 cd "$SNAPSHOT_DIR"
 DOWNLOAD_START=$(date +%s)
 DOWNLOAD_OK=false
 
-sudo chmod 777 "$SNAPSHOT_DIR"
-sudo touch "$SNAPSHOT_DIR/snapshot-finder.log"
-sudo chmod 666 "$SNAPSHOT_DIR/snapshot-finder.log"
+sudo chown -R solv:solv "$SNAPSHOT_DIR"
+sudo chmod 755 "$SNAPSHOT_DIR"
 
-# ── Método 1: snapshot-finder (versión fija, sin bug de 'str'.text) ──
-if [ "$REUSE_FULL" = false ] && command -v docker &> /dev/null; then
-  log "Method 1: snapshot-finder v0.3.4 (full + incremental)..."
-
-  sudo docker run --rm \
-    --user 0:0 \
-    -v "$SNAPSHOT_DIR":/snapshots \
-    c29r3/solana-snapshot-finder:v0.3.4 \
-    --snapshot_path /snapshots \
-    --num_of_retries 5 \
-    --with_private_rpc \
-    --min_download_speed 50 2>&1 | tee -a "$LOG_FILE"
-
-  if validate_full_snapshot; then
-    DOWNLOAD_OK=true
-    log "SUCCESS: snapshot-finder downloaded valid full snapshot"
-  else
-    log "WARN: snapshot-finder did not produce a valid full snapshot"
-    sudo rm -f "${SNAPSHOT_DIR:?}"/*.aria2
-  fi
-elif [ "$REUSE_FULL" = true ]; then
-  log "Method 1 skipped: reusing existing full snapshot"
-  DOWNLOAD_OK=true
-
-  # Intentar bajar solo incremental con snapshot-finder
-  if command -v docker &> /dev/null; then
-    log "Downloading fresh incremental snapshot..."
-    sudo docker run --rm \
-      --user 0:0 \
-      -v "$SNAPSHOT_DIR":/snapshots \
-      c29r3/solana-snapshot-finder:v0.3.4 \
-      --snapshot_path /snapshots \
-      --num_of_retries 3 \
-      --with_private_rpc \
-      --min_download_speed 50 2>&1 | tee -a "$LOG_FILE" || true
-
-    if validate_incremental_snapshot; then
-      log "SUCCESS: Incremental snapshot downloaded"
-    else
-      log "WARN: No valid incremental; validator will rely on full + gossip repair"
-      sudo rm -f "${SNAPSHOT_DIR:?}"/incremental-*.aria2
-    fi
-  fi
-fi
-
-# ── Método 2: wget directo a mirrors (fallback) ──
-if [ "$DOWNLOAD_OK" = false ]; then
-  log "Method 2: wget fallback to public mirrors..."
-
-  for MIRROR in "${MIRRORS[@]}"; do
-    log "Trying mirror: $MIRROR"
-
-    # Limpia residuos de intento previo
-    sudo rm -f "${SNAPSHOT_DIR:?}"/snapshot.tar.* 2>/dev/null
-    sudo rm -f "${SNAPSHOT_DIR:?}"/incremental-snapshot.tar.* 2>/dev/null
-    sudo rm -f "${SNAPSHOT_DIR:?}"/snapshot-*.tar.* 2>/dev/null
-
-    # wget con trust-server-names para que guarde con el nombre real (redirect)
-    sudo wget \
-      --tries=3 \
-      --timeout=120 \
-      --continue \
-      --trust-server-names \
-      --content-disposition \
-      --no-check-certificate \
-      -P "$SNAPSHOT_DIR" \
-      "$MIRROR/snapshot.tar.bz2" 2>&1 | tee -a "$LOG_FILE" || true
-
-    sudo wget \
-      --tries=3 \
-      --timeout=120 \
-      --continue \
-      --trust-server-names \
-      --content-disposition \
-      --no-check-certificate \
-      -P "$SNAPSHOT_DIR" \
-      "$MIRROR/incremental-snapshot.tar.bz2" 2>&1 | tee -a "$LOG_FILE" || true
-
+if [ "$REUSE_FULL" = true ]; then
+  # Reusando full viejo: solo bajar incremental fresco
+  log "Reusing existing full. Fetching fresh incremental only..."
+  if bash "$DOWNLOADER" "$SNAPSHOT_DIR" 2>&1 | tee -a "$LOG_FILE"; then
+    # El downloader intentará bajar full + incremental; el full nuevo
+    # puede coexistir o ser el mismo. Validamos al final.
     if validate_full_snapshot; then
       DOWNLOAD_OK=true
-      log "SUCCESS: Downloaded valid full snapshot from $MIRROR"
-      break
+      log "SUCCESS: downloader completed (reusing or refreshed)"
     else
-      log "WARN: Mirror $MIRROR did not produce a valid snapshot"
+      log "WARN: full snapshot no longer valid after downloader"
     fi
-  done
+  else
+    log "WARN: downloader exited non-zero"
+    # Aún así, si el full viejo sigue siendo válido, continuamos
+    if validate_full_snapshot; then
+      log "NOTE: existing full is still valid, proceeding without fresh incremental"
+      DOWNLOAD_OK=true
+    fi
+  fi
+else
+  # Sin full válido: descarga completa
+  log "Method 1: custom bash downloader (single peer)..."
+  if bash "$DOWNLOADER" "$SNAPSHOT_DIR" 2>&1 | tee -a "$LOG_FILE"; then
+    if validate_full_snapshot; then
+      DOWNLOAD_OK=true
+      log "SUCCESS: bash downloader produced valid full snapshot"
+    else
+      log "WARN: downloader exited 0 but full snapshot is invalid"
+    fi
+  else
+    log "WARN: bash downloader failed"
+  fi
 fi
 
 DOWNLOAD_END=$(date +%s)
@@ -240,9 +185,7 @@ log "Download phase completed in ${DOWNLOAD_DURATION}s"
 if [ "$DOWNLOAD_OK" = false ] || ! validate_full_snapshot; then
   log "CRITICAL: No valid snapshot available after all methods."
   log "NOT starting validator. Monitor will retry on next cron tick."
-  # Limpiar grace file para que el monitor pueda reintentar pronto
   rm -f /tmp/solana-monitor-grace
-  # Limpiar residuos
   sudo rm -f "${SNAPSHOT_DIR:?}"/*.aria2
   exit 1
 fi
