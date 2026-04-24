@@ -2,7 +2,11 @@
 set -uo pipefail
 
 # ──────────────────────────────────────────────────────────────
-#  Solana RPC Node Monitor — v3 (con reinicio preventivo por tiempo)
+#  Solana RPC Node Monitor
+#  Cambios vs v3:
+#  - (1) Detecta servicio caído y reinicia sin esperar grace period
+#  - (3) Grace period reducido de 40 → 15 min (arranque real ~5-10 min)
+#  - (4) Umbral de RPC unreachable reducido de 10 → 5 (20min → 10min)
 # ──────────────────────────────────────────────────────────────
 
 RPC_URL="http://localhost:7211"
@@ -14,30 +18,48 @@ AVG_GAP_THRESHOLD=150         # Promedio móvil máximo del gap (últimas N mues
 MIN_SLOT_VELOCITY=0.50        # Ratio mínimo: (local_delta / cluster_delta). <1 = cayendo atrás
 WINDOW_SIZE=10                # Cuántas muestras guardar para el promedio móvil
 MAX_UPTIME_MINUTES=90         # Reinicio preventivo cada X minutos (0 = deshabilitado)
+RPC_UNREACHABLE_THRESHOLD=5   # (4) Antes 10 — checks consecutivos antes de reiniciar
 
 # --- Archivos de estado ---
 GRACE_PERIOD_FILE="/tmp/solana-monitor-grace"
-GRACE_MINUTES=40
+GRACE_MINUTES=15              # (3) Antes 40 — minutos de gracia post-reinicio
 LOG_FILE="/var/log/solana-monitor.log"
 RESTART_SCRIPT="/etc/solana/restart-validator.sh"
 LOCKFILE="/tmp/solana-restart.lock"
 CONSECUTIVE_FILE="/tmp/solana-unhealthy-count"
 CONSECUTIVE_THRESHOLD=3
-GAP_HISTORY_FILE="/tmp/solana-gap-history"        # Historial de gaps (una línea por muestra)
-LAST_SLOTS_FILE="/tmp/solana-last-slots"          # Última lectura: "local_slot cluster_slot"
-VELOCITY_FAIL_FILE="/tmp/solana-velocity-fail"    # Contador de fallos de velocidad
+GAP_HISTORY_FILE="/tmp/solana-gap-history"
+LAST_SLOTS_FILE="/tmp/solana-last-slots"
+VELOCITY_FAIL_FILE="/tmp/solana-velocity-fail"
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') | MONITOR | $1" >> "$LOG_FILE"
 }
 
-# ── Verificar lockfile de reinicio ──
+# ══════════════════════════════════════════════════════════════
+#  Verificar lockfile de reinicio
+# ══════════════════════════════════════════════════════════════
 if [ -f "$LOCKFILE" ]; then
   LOCK_PID=$(cat "$LOCKFILE" 2>/dev/null || true)
   if kill -0 "$LOCK_PID" 2>/dev/null; then
     log "Restart in progress (PID $LOCK_PID). Skipping check."
     exit 0
   fi
+fi
+
+# ══════════════════════════════════════════════════════════════
+#  (1) DETECCIÓN INMEDIATA DE SERVICIO CAÍDO
+#  Si solv.service está muerto, reiniciar YA sin respetar grace.
+#  Esto cubre el caso del exit 1 del nuevo restart-validator.sh
+#  cuando la descarga falla, o cualquier crash del validator.
+# ══════════════════════════════════════════════════════════════
+if ! systemctl is-active --quiet solv.service; then
+  log "CRITICAL: solv.service is DEAD. Bypassing grace period and restarting immediately."
+  rm -f "$GRACE_PERIOD_FILE"
+  echo "0" > "$CONSECUTIVE_FILE"
+  rm -f "$GAP_HISTORY_FILE" "$LAST_SLOTS_FILE" "$VELOCITY_FAIL_FILE"
+  bash "$RESTART_SCRIPT" >> "$LOG_FILE" 2>&1 &
+  exit 0
 fi
 
 # ══════════════════════════════════════════════════════════════
@@ -58,7 +80,9 @@ if [ "$MAX_UPTIME_MINUTES" -gt 0 ] && [ -f "$GRACE_PERIOD_FILE" ]; then
   fi
 fi
 
-# ── Período de gracia post-reinicio ──
+# ══════════════════════════════════════════════════════════════
+#  Período de gracia post-reinicio
+# ══════════════════════════════════════════════════════════════
 if [ -f "$GRACE_PERIOD_FILE" ]; then
   GRACE_TIME=$(cat "$GRACE_PERIOD_FILE")
   NOW=$(date +%s)
@@ -69,14 +93,9 @@ if [ -f "$GRACE_PERIOD_FILE" ]; then
   fi
 fi
 
-# ── Verificar que el servicio esté corriendo ──
-if ! systemctl is-active --quiet solv.service; then
-  log "WARNING: solv.service is not running! Attempting start..."
-  sudo systemctl start solv.service
-  sleep 10
-fi
-
-# ── Método 1: getHealth ──
+# ══════════════════════════════════════════════════════════════
+#  Método 1: getHealth
+# ══════════════════════════════════════════════════════════════
 HEALTH_RESPONSE=$(curl -s --max-time 10 "$RPC_URL" \
   -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' 2>/dev/null || echo "CURL_FAILED")
@@ -86,7 +105,7 @@ if [ "$HEALTH_RESPONSE" = "CURL_FAILED" ] || [ -z "$HEALTH_RESPONSE" ]; then
   COUNT=$(cat "$CONSECUTIVE_FILE" 2>/dev/null || echo 0)
   COUNT=$((COUNT + 1))
   echo "$COUNT" > "$CONSECUTIVE_FILE"
-  if [ "$COUNT" -ge 10 ]; then
+  if [ "$COUNT" -ge "$RPC_UNREACHABLE_THRESHOLD" ]; then
     log "RPC unreachable for $COUNT consecutive checks. Triggering restart."
     echo "0" > "$CONSECUTIVE_FILE"
     date +%s > "$GRACE_PERIOD_FILE"
@@ -98,7 +117,9 @@ fi
 
 IS_HEALTHY=$(echo "$HEALTH_RESPONSE" | jq -r '.result // empty' 2>/dev/null)
 
-# ── Método 2: Comparar slot local vs cluster ──
+# ══════════════════════════════════════════════════════════════
+#  Método 2: Comparar slot local vs cluster
+# ══════════════════════════════════════════════════════════════
 LOCAL_SLOT=$(curl -s --max-time 10 "$RPC_URL" \
   -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' 2>/dev/null | jq -r '.result // empty' 2>/dev/null)
@@ -127,7 +148,7 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════
-#  DETECCIÓN 1: VELOCIDAD DE SLOTS (¿el nodo avanza lo suficiente?)
+#  DETECCIÓN 1: VELOCIDAD DE SLOTS
 # ══════════════════════════════════════════════════════════════
 VELOCITY_OK=true
 VELOCITY_STR="n/a"
@@ -139,7 +160,6 @@ if [ -n "$LOCAL_SLOT" ] && [ -n "$CLUSTER_SLOT" ] && [ -f "$LAST_SLOTS_FILE" ]; 
     CLUSTER_DELTA=$((CLUSTER_SLOT - PREV_CLUSTER))
 
     if [ "$CLUSTER_DELTA" -gt 0 ]; then
-      # bash no hace float; multiplicamos por 100 para comparar
       VELOCITY_X100=$((LOCAL_DELTA * 100 / CLUSTER_DELTA))
       THRESHOLD_X100=$(echo "$MIN_SLOT_VELOCITY" | awk '{printf "%d", $1 * 100}')
       VELOCITY_STR="${VELOCITY_X100}%"
@@ -151,7 +171,6 @@ if [ -n "$LOCAL_SLOT" ] && [ -n "$CLUSTER_SLOT" ] && [ -f "$LAST_SLOTS_FILE" ]; 
   fi
 fi
 
-# Guardar slots actuales para la próxima iteración
 if [ -n "$LOCAL_SLOT" ] && [ -n "$CLUSTER_SLOT" ]; then
   echo "$LOCAL_SLOT $CLUSTER_SLOT" > "$LAST_SLOTS_FILE"
 fi
@@ -160,7 +179,6 @@ fi
 #  DETECCIÓN 2: PROMEDIO MÓVIL DEL GAP
 # ══════════════════════════════════════════════════════════════
 echo "$SLOTS_BEHIND" >> "$GAP_HISTORY_FILE"
-# Mantener solo las últimas WINDOW_SIZE líneas
 tail -n "$WINDOW_SIZE" "$GAP_HISTORY_FILE" > "${GAP_HISTORY_FILE}.tmp" && mv "${GAP_HISTORY_FILE}.tmp" "$GAP_HISTORY_FILE"
 
 AVG_GAP=$(awk '{ sum += $1; n++ } END { if(n>0) printf "%d", sum/n; else print 0 }' "$GAP_HISTORY_FILE")
@@ -206,7 +224,6 @@ if [ "$VELOCITY_OK" = false ]; then
     log "Velocity low ($VELOCITY_STR), fail $VFAIL/$CONSECUTIVE_THRESHOLD"
   fi
 else
-  # Decrementar en vez de resetear a 0
   VFAIL=$(cat "$VELOCITY_FAIL_FILE" 2>/dev/null || echo 0)
   if [ "$VFAIL" -gt 0 ]; then
     VFAIL=$((VFAIL - 1))
@@ -216,7 +233,6 @@ fi
 
 if [ "$NODE_UNHEALTHY" = false ]; then
   log "OK: $SLOTS_BEHIND slots behind (avg=$AVG_GAP). Within thresholds."
-  # Decrementar en vez de resetear a 0
   COUNT=$(cat "$CONSECUTIVE_FILE" 2>/dev/null || echo 0)
   if [ "$COUNT" -gt 0 ]; then
     COUNT=$((COUNT - 1))
@@ -225,7 +241,9 @@ if [ "$NODE_UNHEALTHY" = false ]; then
   exit 0
 fi
 
-# ── Nodo no saludable: incrementar contador ──
+# ══════════════════════════════════════════════════════════════
+#  Nodo no saludable: incrementar contador
+# ══════════════════════════════════════════════════════════════
 log "UNHEALTHY: $REASON"
 
 COUNT=$(cat "$CONSECUTIVE_FILE" 2>/dev/null || echo 0)
