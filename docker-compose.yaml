@@ -1,16 +1,13 @@
 services:
-
-#-----Postgres-----
   db:
-    image: timescale/timescaledb:latest-pg16
+    image: postgres:16
     restart: always
     environment:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
-      TIMESCALEDB_TELEMETRY: "off"
     ports:
-      - 5432:5432
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./memecoin_detecting/scripts/setup_memecoins_db.sql:/docker-entrypoint-initdb.d/01-schema.sql
@@ -20,8 +17,7 @@ services:
       timeout: 3s
       retries: 5
 
-#-----Servidor---
-  detector:
+  token-sync:
     build:
       context: ./memecoin_detecting
       dockerfile: docker/Dockerfile
@@ -30,11 +26,10 @@ services:
     environment:
       - DB_HOST=db
     depends_on:
-      db:
-        condition: service_healthy
-    command: ["python3", "detector_memecoins.py"]
+      db: { condition: service_healthy }
+    command: ["python3", "birdeye_token_sync.py"]
 
-  metrics_collector:
+  top-traders-sync:
     build:
       context: ./memecoin_detecting
       dockerfile: docker/Dockerfile
@@ -43,11 +38,10 @@ services:
     environment:
       - DB_HOST=db
     depends_on:
-      db:
-        condition: service_healthy
-    command: ["python3", "metrics_collector.py"]
+      db: { condition: service_healthy }
+    command: ["python3", "birdeye_top_traders_sync.py"]
 
-  wallet-tracker:
+  wallet-sync:
     build:
       context: ./memecoin_detecting
       dockerfile: docker/Dockerfile
@@ -56,11 +50,10 @@ services:
     environment:
       - DB_HOST=db
     depends_on:
-      db:
-        condition: service_healthy
-    command: ["python3", "enhanced_wallet_tracker.py"]
+      db: { condition: service_healthy }
+    command: ["python3", "birdeye_wallet_sync.py"]
 
-  wallet_classifier:
+  wallet-classifier:
     build:
       context: ./memecoin_detecting
       dockerfile: docker/Dockerfile
@@ -69,13 +62,9 @@ services:
     environment:
       - DB_HOST=db
     depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-    - /var/log/memecoin:/var/log/memecoin
-    command: sh -c "while true; do python3 wallet_classifier.py >> /var/log/memecoin/wallet_classifier.log 2>&1; sleep 1800; done"
+      db: { condition: service_healthy }
+    command: sh -c "while true; do python3 wallet_classifier.py; sleep 1800; done"
 
-#-----Backend----
   api-server:
     build:
       context: ./interface/backend
@@ -87,8 +76,7 @@ services:
     ports:
       - "8200:8200"
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
 
 volumes:
   pgdata:
