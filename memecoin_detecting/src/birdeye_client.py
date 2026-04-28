@@ -1,4 +1,4 @@
-"""birdeye_client.py — Cliente HTTP con rate limiting dual (general + wallet) y kill switch por CUs."""
+"""birdeye_client.py — Cliente HTTP con rate limiting dual, kill switch y soft throttle."""
 import time
 import logging
 import threading
@@ -6,7 +6,9 @@ from datetime import date
 from collections import deque
 import requests
 import psycopg2
-from shared_config import BIRDEYE, CU_COST, WALLET_ENDPOINT_PREFIXES, DB_CONFIG
+from shared_config import (
+    BIRDEYE, CU_COST, WALLET_ENDPOINT_PREFIXES, DB_CONFIG, THROTTLE
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,30 +42,72 @@ class BirdeyeClient:
             "accept": "application/json",
             "x-chain": BIRDEYE["chain"],
         }
-        # Limitador general (rps del plan, con margen)
         self.general_limiter = RateLimiter(BIRDEYE["general_rps"], 1)
-        # Limitador específico Wallet API (30 rpm oficial → usamos 25)
         self.wallet_limiter = RateLimiter(BIRDEYE["wallet_rpm"], 60)
         self.budget = BIRDEYE["daily_cu_budget"]
         self.lock = threading.Lock()
+
+        # Soft throttle (airbag)
+        self._throttle_cache = {"factor": 1.0, "zone": "green", "pct": 0.0, "checked_at": 0}
+        self._throttle_ttl = 10  # segundos
+
         self._ensure_usage_row()
 
     def _ensure_usage_row(self):
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
         cur.execute("INSERT INTO birdeye_usage (day) VALUES (CURRENT_DATE) ON CONFLICT DO NOTHING")
-        conn.commit()
-        cur.close()
-        conn.close()
+        conn.commit(); cur.close(); conn.close()
 
     def _cu_cost(self, path: str) -> int:
         for key, cost in CU_COST.items():
             if path.startswith(key):
                 return cost
-        return 10  # default conservador
+        return 10
 
     def _is_wallet_endpoint(self, path: str) -> bool:
         return any(path.startswith(p) for p in WALLET_ENDPOINT_PREFIXES)
+
+    def _get_throttle(self) -> tuple:
+        """Devuelve (factor, zona, pct) según CU consumido hoy. Cacheado 10s."""
+        now = time.time()
+        if now - self._throttle_cache["checked_at"] < self._throttle_ttl:
+            c = self._throttle_cache
+            return c["factor"], c["zone"], c["pct"]
+
+        try:
+            conn = psycopg2.connect(**DB_CONFIG)
+            cur = conn.cursor()
+            cur.execute("SELECT cu_consumed FROM birdeye_usage WHERE day = CURRENT_DATE")
+            row = cur.fetchone()
+            cur.close(); conn.close()
+            today_cu = row[0] if row else 0
+        except Exception as e:
+            logger.warning(f"throttle: no pude leer birdeye_usage: {e}")
+            today_cu = 0
+
+        pct = (today_cu / self.budget) * 100 if self.budget else 0
+        prev_zone = self._throttle_cache["zone"]
+
+        if pct >= THROTTLE["red_pct"]:
+            factor, zone = THROTTLE["red_factor"], "red"
+        elif pct >= THROTTLE["yellow_pct"]:
+            factor, zone = THROTTLE["yellow_factor"], "yellow"
+        else:
+            factor, zone = 1.0, "green"
+
+        self._throttle_cache = {
+            "factor": factor, "zone": zone, "pct": pct, "checked_at": now
+        }
+
+        # Log sólo cuando cambia de zona (evita spam)
+        if zone != prev_zone:
+            emoji = {"green": "🟢", "yellow": "🟡", "red": "🔴"}[zone]
+            logger.warning(
+                f"{emoji} CU throttle {prev_zone} → {zone}: "
+                f"{today_cu:,} / {self.budget:,} CU ({pct:.1f}%), factor x{factor}"
+            )
+        return factor, zone, pct
 
     def _check_budget_and_count(self, path: str):
         cost = self._cu_cost(path)
@@ -85,14 +129,18 @@ class BirdeyeClient:
                 wallet_requests = birdeye_usage.wallet_requests + EXCLUDED.wallet_requests,
                 last_updated = NOW()
         """, (cost, 1 if is_wallet else 0))
-        conn.commit()
-        cur.close(); conn.close()
+        conn.commit(); cur.close(); conn.close()
 
     def get(self, path: str, params: dict = None, max_retries: int = 3):
         self.general_limiter.acquire()
         if self._is_wallet_endpoint(path):
             self.wallet_limiter.acquire()
         self._check_budget_and_count(path)
+
+        # Airbag: si ya consumimos mucho CU, añadimos sleep proporcional
+        factor, zone, _pct = self._get_throttle()
+        if factor > 1.0:
+            time.sleep(THROTTLE["base_sleep"] * factor)
 
         url = f"{self.base}{path}"
         for attempt in range(max_retries):
@@ -113,7 +161,7 @@ class BirdeyeClient:
                 time.sleep(1 + attempt)
         return None
 
-    # ---- Endpoints de conveniencia ----
+    # ---- Endpoints ----
     def new_listings(self, limit=20, meme_platform=True):
         return self.get("/defi/v2/tokens/new_listing",
                         {"limit": limit, "meme_platform_enabled": str(meme_platform).lower()})

@@ -49,3 +49,12 @@ CU_COST = {
 }
 
 WALLET_ENDPOINT_PREFIXES = ("/wallet/", "/v1/wallet/")
+
+# === Soft throttle adaptativo (airbag de CU) ===
+THROTTLE = {
+    "yellow_pct":    int(os.getenv("CU_THROTTLE_YELLOW_PCT", 70)),
+    "red_pct":       int(os.getenv("CU_THROTTLE_RED_PCT", 90)),
+    "yellow_factor": float(os.getenv("CU_THROTTLE_YELLOW_FACTOR", 2.0)),
+    "red_factor":    float(os.getenv("CU_THROTTLE_RED_FACTOR", 5.0)),
+    "base_sleep":    float(os.getenv("CU_THROTTLE_BASE_SLEEP", 0.5)),
+}
