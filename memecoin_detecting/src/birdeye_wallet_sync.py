@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
-"""birdeye_wallet_sync.py — Respeta los 30 rpm de Wallet API. 1 request cada 2.4s (25 rpm real).
-
-Flujo:
-  1. Lee de wallet_sync_queue wallets con next_sync_at <= NOW() por prioridad.
-  2. Para cada una pide /wallet/v2/pnl/summary.
-  3. Guarda en wallet_pnl_cache.
-  4. Reprograma next_sync_at según refresh_interval_sec.
-
-El BirdeyeClient ya aplica internamente el rate limiter de 25 rpm.
-"""
+"""birdeye_wallet_sync.py — Respeta los 30 rpm de Wallet API (usa 25 rpm)."""
 import time
 import logging
 import psycopg2
 import psycopg2.extras
 from psycopg2.extras import Json
-from datetime import datetime, timedelta
 from birdeye_client import BirdeyeClient
 from shared_config import DB_CONFIG, TTL
 
@@ -30,10 +20,12 @@ class WalletSyncer:
 
     def pick_batch(self, limit=25):
         cur = self.conn.cursor()
+        # Sólo wallets activas (respeta rotación de MAX_TRACKED_WALLETS)
         cur.execute("""
             SELECT wallet_address, priority, refresh_interval_sec
             FROM wallet_sync_queue
-            WHERE next_sync_at <= NOW()
+            WHERE active = TRUE
+              AND next_sync_at <= NOW()
             ORDER BY priority ASC, next_sync_at ASC
             LIMIT %s
         """, (limit,))
@@ -63,7 +55,6 @@ class WalletSyncer:
         trades   = d.get("trade_count")    or d.get("tradeCount")    or d.get("trades")
         winrate  = d.get("win_rate")       or d.get("winRate")
 
-        # FIX: Json(d) en vez de json.dumps(d) + ::jsonb
         cur.execute("""
             INSERT INTO wallet_pnl_cache
               (wallet_address, realized_pnl_usd, unrealized_pnl_usd, total_pnl_usd,
@@ -80,7 +71,6 @@ class WalletSyncer:
               last_updated       = NOW()
         """, (wallet, realized, unreal, total, roi, trades, winrate, Json(d)))
 
-        # FIX: make_interval también aquí
         cur.execute("""
             UPDATE wallet_sync_queue SET
               last_synced_at = NOW(),
@@ -95,10 +85,12 @@ class WalletSyncer:
         """Inyecta las tracked_wallets en la cola con alta prioridad."""
         cur = self.conn.cursor()
         cur.execute("""
-            INSERT INTO wallet_sync_queue (wallet_address, priority, refresh_interval_sec, next_sync_at)
-            SELECT wallet_address, LEAST(priority, 2), 900, NOW()
+            INSERT INTO wallet_sync_queue
+                (wallet_address, priority, refresh_interval_sec, active, next_sync_at)
+            SELECT wallet_address, LEAST(priority, 2), 900, TRUE, NOW()
             FROM tracked_wallets WHERE is_active = TRUE
             ON CONFLICT (wallet_address) DO UPDATE SET
+              active = TRUE,
               priority = LEAST(wallet_sync_queue.priority, EXCLUDED.priority),
               refresh_interval_sec = LEAST(wallet_sync_queue.refresh_interval_sec, EXCLUDED.refresh_interval_sec)
         """)
@@ -122,7 +114,6 @@ class WalletSyncer:
                 for wallet, prio, interval in batch:
                     if self.sync_wallet(wallet, interval or TTL["wallet_pnl"]):
                         ok += 1
-                    # el rate limiter interno ya hace sleep, pero añadimos pequeña guarda
                     time.sleep(0.1)
                 logger.info(f"💼 PnL actualizado en {ok}/{len(batch)} wallets")
             except Exception as e:

@@ -1,4 +1,4 @@
--- Schema v7: migrado a Birdeye. Sin TimescaleDB, sin tablas masivas de transacciones.
+-- Schema v8: migrado a Birdeye + tope MAX_TRACKED_WALLETS con rotación.
 
 -- 1. Tokens detectados (metadata + estado)
 CREATE TABLE IF NOT EXISTS tokens (
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS token_market_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_market_updated ON token_market_cache(last_updated DESC);
 
--- 3. Histórico de precio (opcional, snapshots ligeros)
+-- 3. Histórico de precio (snapshots ligeros)
 CREATE TABLE IF NOT EXISTS token_price_history (
     id BIGSERIAL PRIMARY KEY,
     token_id INTEGER REFERENCES tokens(token_id) ON DELETE CASCADE,
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS tracked_wallets (
     added_at TIMESTAMP DEFAULT NOW()
 );
 
--- 6. Caché de PnL por wallet (alimentada por birdeye_wallet_sync)
+-- 6. Caché de PnL por wallet
 CREATE TABLE IF NOT EXISTS wallet_pnl_cache (
     wallet_address VARCHAR(44) PRIMARY KEY,
     realized_pnl_usd NUMERIC(20,4),
@@ -77,17 +77,20 @@ CREATE TABLE IF NOT EXISTS wallet_pnl_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_pnl_total ON wallet_pnl_cache(total_pnl_usd DESC);
 
--- 7. Cola de sincronización de wallets (prioridad + next_sync_at)
+-- 7. Cola de sincronización de wallets (prioridad + tope + next_sync_at)
 CREATE TABLE IF NOT EXISTS wallet_sync_queue (
     wallet_address VARCHAR(44) PRIMARY KEY,
     priority INTEGER DEFAULT 5,          -- 1=más alta, 10=más baja
-    refresh_interval_sec INTEGER DEFAULT 1800,
+    refresh_interval_sec INTEGER DEFAULT 3600,
+    active BOOLEAN NOT NULL DEFAULT TRUE, -- FALSE = desbancada por rotación
     next_sync_at TIMESTAMP DEFAULT NOW(),
     last_synced_at TIMESTAMP,
     fail_count INTEGER DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_queue_next ON wallet_sync_queue(next_sync_at);
-CREATE INDEX IF NOT EXISTS idx_queue_prio ON wallet_sync_queue(priority ASC, next_sync_at ASC);
+CREATE INDEX IF NOT EXISTS idx_queue_active_next
+    ON wallet_sync_queue(active, next_sync_at) WHERE active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_queue_prio
+    ON wallet_sync_queue(priority ASC, next_sync_at ASC) WHERE active = TRUE;
 
 -- 8. Top traders por token (cache)
 CREATE TABLE IF NOT EXISTS token_top_traders_cache (
@@ -102,7 +105,7 @@ CREATE TABLE IF NOT EXISTS token_top_traders_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_ttc_token ON token_top_traders_cache(token_id, rank);
 
--- 9. Clasificación de inversores (lógica propia)
+-- 9. Clasificación de inversores
 CREATE TABLE IF NOT EXISTS wallet_classifications (
     classification_id SERIAL PRIMARY KEY,
     wallet_address VARCHAR(44) UNIQUE REFERENCES wallet_pnl_cache(wallet_address) ON DELETE CASCADE,

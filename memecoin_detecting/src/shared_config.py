@@ -21,11 +21,15 @@ BIRDEYE = {
     "daily_cu_budget": int(os.getenv("BIRDEYE_DAILY_CU_BUDGET", 600_000)),
 }
 
+# Topes de trabajo (28-abr-2026)
+MAX_TRACKED_WALLETS = int(os.getenv("MAX_TRACKED_WALLETS", 100))
+TOP_TRADERS_TOKEN_LIMIT = int(os.getenv("TOP_TRADERS_TOKEN_LIMIT", 75))
+
 TTL = {
-    "token_price": int(os.getenv("TTL_TOKEN_PRICE", 30)),
-    "token_market": int(os.getenv("TTL_TOKEN_MARKET", 60)),
-    "top_traders": int(os.getenv("TTL_TOP_TRADERS", 600)),
-    "wallet_pnl": int(os.getenv("TTL_WALLET_PNL", 1800)),
+    "token_price": int(os.getenv("TTL_TOKEN_PRICE", 60)),
+    "token_market": int(os.getenv("TTL_TOKEN_MARKET", 120)),
+    "top_traders": int(os.getenv("TTL_TOP_TRADERS", 3600)),
+    "wallet_pnl": int(os.getenv("TTL_WALLET_PNL", 3600)),
     "new_listings": int(os.getenv("TTL_NEW_LISTINGS", 60)),
 }
 
