@@ -11,8 +11,9 @@ El BirdeyeClient ya aplica internamente el rate limiter de 25 rpm.
 """
 import time
 import logging
-import json
 import psycopg2
+import psycopg2.extras
+from psycopg2.extras import Json
 from datetime import datetime, timedelta
 from birdeye_client import BirdeyeClient
 from shared_config import DB_CONFIG, TTL
@@ -46,43 +47,45 @@ class WalletSyncer:
         if not data or "data" not in data:
             cur.execute("""
                 UPDATE wallet_sync_queue SET
-                    fail_count = fail_count + 1,
+                    fail_count     = fail_count + 1,
                     last_synced_at = NOW(),
-                    next_sync_at = NOW() + INTERVAL '%s seconds'
+                    next_sync_at   = NOW() + make_interval(secs => %s)
                 WHERE wallet_address = %s
             """, (interval_sec * 2, wallet))
             self.conn.commit(); cur.close()
             return False
 
         d = data["data"] if isinstance(data["data"], dict) else {}
-        realized = d.get("realized_pnl") or d.get("realizedPnl") or 0
+        realized = d.get("realized_pnl")   or d.get("realizedPnl")   or 0
         unreal   = d.get("unrealized_pnl") or d.get("unrealizedPnl") or 0
-        total    = d.get("total_pnl") or d.get("totalPnl") or (float(realized) + float(unreal))
-        roi      = d.get("roi") or d.get("roi_pct")
-        trades   = d.get("trade_count") or d.get("tradeCount") or d.get("trades")
-        winrate  = d.get("win_rate") or d.get("winRate")
+        total    = d.get("total_pnl")      or d.get("totalPnl")      or (float(realized) + float(unreal))
+        roi      = d.get("roi")            or d.get("roi_pct")
+        trades   = d.get("trade_count")    or d.get("tradeCount")    or d.get("trades")
+        winrate  = d.get("win_rate")       or d.get("winRate")
 
+        # FIX: Json(d) en vez de json.dumps(d) + ::jsonb
         cur.execute("""
             INSERT INTO wallet_pnl_cache
               (wallet_address, realized_pnl_usd, unrealized_pnl_usd, total_pnl_usd,
                roi_pct, trade_count, win_rate, raw_json, last_updated)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb, NOW())
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW())
             ON CONFLICT (wallet_address) DO UPDATE SET
-              realized_pnl_usd = EXCLUDED.realized_pnl_usd,
+              realized_pnl_usd   = EXCLUDED.realized_pnl_usd,
               unrealized_pnl_usd = EXCLUDED.unrealized_pnl_usd,
-              total_pnl_usd = EXCLUDED.total_pnl_usd,
-              roi_pct = EXCLUDED.roi_pct,
-              trade_count = EXCLUDED.trade_count,
-              win_rate = EXCLUDED.win_rate,
-              raw_json = EXCLUDED.raw_json,
-              last_updated = NOW()
-        """, (wallet, realized, unreal, total, roi, trades, winrate, json.dumps(d)))
+              total_pnl_usd      = EXCLUDED.total_pnl_usd,
+              roi_pct            = EXCLUDED.roi_pct,
+              trade_count        = EXCLUDED.trade_count,
+              win_rate           = EXCLUDED.win_rate,
+              raw_json           = EXCLUDED.raw_json,
+              last_updated       = NOW()
+        """, (wallet, realized, unreal, total, roi, trades, winrate, Json(d)))
 
+        # FIX: make_interval también aquí
         cur.execute("""
             UPDATE wallet_sync_queue SET
               last_synced_at = NOW(),
-              next_sync_at = NOW() + INTERVAL '%s seconds',
-              fail_count = 0
+              next_sync_at   = NOW() + make_interval(secs => %s),
+              fail_count     = 0
             WHERE wallet_address = %s
         """, (interval_sec, wallet))
         self.conn.commit(); cur.close()

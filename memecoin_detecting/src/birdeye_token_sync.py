@@ -3,6 +3,8 @@
 import time
 import logging
 import psycopg2
+import psycopg2.extras  # ← FIX: import a nivel módulo, no dentro de __main__
+from psycopg2.extras import Json
 from datetime import datetime
 from birdeye_client import BirdeyeClient
 from shared_config import DB_CONFIG, TTL
@@ -44,18 +46,20 @@ class TokenSyncer:
 
     def refresh_market_data(self, batch_size=50):
         cur = self.conn.cursor()
+        # FIX: usar make_interval para que el parámetro sí se interpole
         cur.execute("""
             SELECT t.token_id, t.mint_address
             FROM tokens t
             LEFT JOIN token_market_cache c ON c.token_id = t.token_id
             WHERE t.status = 'active'
-              AND (c.last_updated IS NULL OR c.last_updated < NOW() - INTERVAL '%s seconds')
+              AND (c.last_updated IS NULL
+                   OR c.last_updated < NOW() - make_interval(secs => %s))
             ORDER BY c.last_updated NULLS FIRST
             LIMIT %s
         """, (TTL["token_market"], batch_size))
         rows = cur.fetchall()
+        cur.close()
         if not rows:
-            cur.close()
             return 0
 
         mints = [r[1] for r in rows]
@@ -68,24 +72,24 @@ class TokenSyncer:
             p = prices.get(mint) if isinstance(prices, dict) else None
             if not p:
                 continue
+            # FIX: Json(p) ya siempre disponible porque el import está a nivel módulo
             up.execute("""
                 INSERT INTO token_market_cache
                   (token_id, price_usd, liquidity, raw_json, last_updated)
-                VALUES (%s, %s, %s, %s::jsonb, NOW())
+                VALUES (%s, %s, %s, %s, NOW())
                 ON CONFLICT (token_id) DO UPDATE SET
-                  price_usd = EXCLUDED.price_usd,
-                  liquidity = EXCLUDED.liquidity,
-                  raw_json = EXCLUDED.raw_json,
+                  price_usd    = EXCLUDED.price_usd,
+                  liquidity    = EXCLUDED.liquidity,
+                  raw_json     = EXCLUDED.raw_json,
                   last_updated = NOW()
-            """, (tid, p.get("value"), p.get("liquidity"),
-                  psycopg2.extras.Json(p) if hasattr(psycopg2.extras, "Json") else None))
+            """, (tid, p.get("value"), p.get("liquidity"), Json(p)))
             up.execute("""
                 INSERT INTO token_price_history (token_id, price_usd)
                 VALUES (%s, %s)
             """, (tid, p.get("value")))
             count += 1
         self.conn.commit()
-        up.close(); cur.close()
+        up.close()
         logger.info(f"💰 Market data refrescada en {count} tokens")
         return count
 
@@ -111,5 +115,4 @@ class TokenSyncer:
 
 
 if __name__ == "__main__":
-    import psycopg2.extras  # para Json
     TokenSyncer().run()
