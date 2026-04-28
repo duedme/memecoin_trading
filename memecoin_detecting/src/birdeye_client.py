@@ -163,8 +163,11 @@ class BirdeyeClient:
 
     # ---- Endpoints ----
     def new_listings(self, limit=20, meme_platform=True):
-        return self.get("/defi/v2/tokens/new_listing",
-                        {"limit": limit, "meme_platform_enabled": str(meme_platform).lower()})
+        return self.get("/defi/v2/tokens/new_listing", {
+            "time_to": int(time.time()),
+            "limit": limit,
+            "meme_platform_enabled": str(meme_platform).lower(),
+        })
 
     def token_overview(self, mint: str):
         return self.get("/defi/token_overview", {"address": mint})
