@@ -137,7 +137,6 @@ class BirdeyeClient:
             self.wallet_limiter.acquire()
         self._check_budget_and_count(path)
 
-        # Airbag: si ya consumimos mucho CU, añadimos sleep proporcional
         factor, zone, _pct = self._get_throttle()
         if factor > 1.0:
             time.sleep(THROTTLE["base_sleep"] * factor)
@@ -149,11 +148,14 @@ class BirdeyeClient:
                 if r.status_code == 429:
                     wait = 2 ** attempt + 2
                     logger.warning(f"429 en {path}, esperando {wait}s")
-                    time.sleep(wait)
-                    continue
+                    time.sleep(wait); continue
+                if 400 <= r.status_code < 500:
+                    # NUEVO: logguear body del error 4xx (no reintenta, es determinístico)
+                    body = r.text[:500] if r.text else "(vacío)"
+                    logger.error(f"{r.status_code} en {path} params={params} → body: {body}")
+                    return None
                 if r.status_code >= 500:
-                    time.sleep(2 ** attempt)
-                    continue
+                    time.sleep(2 ** attempt); continue
                 r.raise_for_status()
                 return r.json()
             except requests.RequestException as e:
