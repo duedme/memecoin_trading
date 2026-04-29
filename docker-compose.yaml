@@ -25,9 +25,10 @@ services:
     env_file: ./memecoin_detecting/.env
     environment:
       - DB_HOST=db
+      - PYTHONUNBUFFERED=1
     depends_on:
       db: { condition: service_healthy }
-    command: ["python3", "birdeye_token_sync.py"]
+    command: ["python3", "-u", "birdeye_token_sync.py"]
 
   top-traders-sync:
     build:
@@ -37,9 +38,10 @@ services:
     env_file: ./memecoin_detecting/.env
     environment:
       - DB_HOST=db
+      - PYTHONUNBUFFERED=1
     depends_on:
       db: { condition: service_healthy }
-    command: ["python3", "birdeye_top_traders_sync.py"]
+    command: ["python3", "-u", "birdeye_top_traders_sync.py"]
 
   wallet-sync:
     build:
@@ -49,9 +51,10 @@ services:
     env_file: ./memecoin_detecting/.env
     environment:
       - DB_HOST=db
+      - PYTHONUNBUFFERED=1
     depends_on:
       db: { condition: service_healthy }
-    command: ["python3", "birdeye_wallet_sync.py"]
+    command: ["python3", "-u", "birdeye_wallet_sync.py"]
 
   wallet-classifier:
     build:
@@ -61,9 +64,10 @@ services:
     env_file: ./memecoin_detecting/.env
     environment:
       - DB_HOST=db
+      - PYTHONUNBUFFERED=1
     depends_on:
       db: { condition: service_healthy }
-    command: sh -c "while true; do python3 wallet_classifier.py; sleep 1800; done"
+    command: sh -c "while true; do python3 -u wallet_classifier.py; sleep 1800; done"
 
   api-server:
     build:
