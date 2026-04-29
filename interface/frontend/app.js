@@ -55,8 +55,8 @@ const VIEW_CONFIG = {
             <th>TRADES</th>
             <th>UNREALIZED (USD)</th>
             <th>REALIZED (USD)</th>
-            <th>BEST TRADE</th>
-            <th>WORST TRADE</th>
+            <th>BEST TOKEN (USD)</th>
+            <th>WORST TOKEN (USD)</th>
             <th>TOKENS</th>
             <th>LAST SEEN</th>
         </tr>`,
