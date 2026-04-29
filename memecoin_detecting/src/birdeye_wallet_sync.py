@@ -47,13 +47,39 @@ class WalletSyncer:
             self.conn.commit(); cur.close()
             return False
 
-        d = data["data"] if isinstance(data["data"], dict) else {}
-        realized = d.get("realized_pnl")   or d.get("realizedPnl")   or 0
-        unreal   = d.get("unrealized_pnl") or d.get("unrealizedPnl") or 0
-        total    = d.get("total_pnl")      or d.get("totalPnl")      or (float(realized) + float(unreal))
-        roi      = d.get("roi")            or d.get("roi_pct")
-        trades   = d.get("trade_count")    or d.get("tradeCount")    or d.get("trades")
-        winrate  = d.get("win_rate")       or d.get("winRate")
+        d = data["data"] if isinstance(data.get("data"), dict) else {}
+        summary = d.get("summary") or {}
+        pnl_obj    = summary.get("pnl") or {}
+        counts_obj = summary.get("counts") or {}
+
+        # Birdeye v2: summary.pnl.* / summary.counts.* (confirmado 29-abr-2026)
+        # Fallbacks viejos se dejan como red de seguridad si Birdeye cambia el esquema.
+        realized = pnl_obj.get("realized_profit_usd")
+        if realized is None:
+            realized = d.get("realized_pnl") or d.get("realizedPnl") or 0
+
+        unreal = pnl_obj.get("unrealized_usd")
+        if unreal is None:
+            unreal = d.get("unrealized_pnl") or d.get("unrealizedPnl") or 0
+
+        total = pnl_obj.get("total_usd")
+        if total is None:
+            total = d.get("total_pnl") or d.get("totalPnl") or (float(realized) + float(unreal))
+
+        roi = pnl_obj.get("realized_profit_percent")
+        if roi is None:
+            roi = d.get("roi") or d.get("roi_pct")
+
+        trades = counts_obj.get("total_trade")
+        if trades is None:
+            trades = d.get("trade_count") or d.get("tradeCount") or d.get("trades")
+
+        # win_rate viene como ratio 0..1 en v2; la columna win_rate NUMERIC(5,2) espera porcentaje.
+        win_rate_raw = counts_obj.get("win_rate")
+        if win_rate_raw is not None:
+            winrate = float(win_rate_raw) * 100
+        else:
+            winrate = d.get("win_rate") or d.get("winRate")
 
         cur.execute("""
             INSERT INTO wallet_pnl_cache
