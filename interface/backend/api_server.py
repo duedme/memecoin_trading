@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""api_server.py v4 — FastAPI que SOLO lee de Postgres (caché de Birdeye).
+"""api_server.py v4.1 — FastAPI que SOLO lee de Postgres (caché de Birdeye).
 
-Endpoints compatibles con el frontend v3.3:
-- GET /api/top-traders
-- GET /api/trader/<wallet>
-- GET /api/tokens
-- GET /api/stats
-- GET /api/token/<mint>/investors
-- GET /api/usage
-- GET /health
+Cambios 29-abr-2026:
+- /api/top-traders ahora devuelve tokenstraded real (conteo desde token_top_traders_cache).
+- Resto intacto.
 """
 import os
 import psycopg2
@@ -18,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-app = FastAPI(title="Memecoin Screener API v4 (Birdeye-backed)")
+app = FastAPI(title="Memecoin Screener API v4.1 (Birdeye-backed)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -85,9 +80,11 @@ def top_traders(
         "roi": "pc.roi_pct",
         "trades": "pc.trade_count",
         "score": "wc.investor_score",
-        "besttrade": "pc.total_pnl_usd",
-        "invested": "pc.total_pnl_usd",
+        "besttrade": "tt.best_trade_usd",
+        "worsttrade": "tt.worst_trade_usd",
+        "invested": "pc.unrealized_pnl_usd",
         "realized": "pc.realized_pnl_usd",
+        "tokens": "tt.tokens_traded",
     }
     col = sort_map.get(sort, "pc.total_pnl_usd")
     direction = "DESC" if order.lower() == "desc" else "ASC"
@@ -99,10 +96,21 @@ def top_traders(
                pc.win_rate, pc.last_updated,
                w.first_seen, w.last_seen, w.tags, w.is_active,
                wc.behavior_type, wc.consistency_level, wc.profit_tier,
-               wc.investor_type, wc.investor_score, wc.investor_label
+               wc.investor_type, wc.investor_score, wc.investor_label,
+               COALESCE(tt.tokens_traded, 0) AS tokens_traded,
+               tt.best_trade_usd,
+               tt.worst_trade_usd
         FROM wallet_pnl_cache pc
         LEFT JOIN wallets w ON w.wallet_address = pc.wallet_address
         LEFT JOIN wallet_classifications wc ON wc.wallet_address = pc.wallet_address
+        LEFT JOIN (
+            SELECT wallet_address,
+                   COUNT(DISTINCT token_id) AS tokens_traded,
+                   MAX(total_pnl)           AS best_trade_usd,
+                   MIN(total_pnl)           AS worst_trade_usd
+            FROM token_top_traders_cache
+            GROUP BY wallet_address
+        ) tt ON tt.wallet_address = pc.wallet_address
         WHERE COALESCE(pc.trade_count, 0) >= %s
         ORDER BY {col} {direction} NULLS LAST
         LIMIT %s
@@ -128,12 +136,12 @@ def top_traders(
             "totalrealized": float(r["realized_pnl_usd"]) if r.get("realized_pnl_usd") is not None else None,
             "winrate": float(r["win_rate"]) if r.get("win_rate") is not None else 0,
             "avgprofitpertrade": None,
-            "besttrade": None,
-            "worsttrade": None,
+            "besttrade": float(r["best_trade_usd"])  if r.get("best_trade_usd")  is not None else None,
+            "worsttrade": float(r["worst_trade_usd"]) if r.get("worst_trade_usd") is not None else None,
             "roipercentage": float(r["roi_pct"]) if r.get("roi_pct") is not None else 0,
             "openpositions": 0,
             "unrealizedpnl": float(r["unrealized_pnl_usd"]) if r.get("unrealized_pnl_usd") is not None else None,
-            "tokenstraded": 0,
+            "tokenstraded": int(r.get("tokens_traded") or 0),
             "tags": r.get("tags") or "",
             "isactive": bool(r.get("is_active")) if r.get("is_active") is not None else True,
             "firstseen": r["first_seen"].isoformat() if r.get("first_seen") else None,
@@ -159,7 +167,6 @@ def trader_detail(wallet: str):
         WHERE pc.wallet_address = %s
     """, (wallet,))
     if not r:
-        # encolar con alta prioridad para próxima sync
         conn = psycopg2.connect(**DB); cur = conn.cursor()
         cur.execute("""
             INSERT INTO wallet_sync_queue (wallet_address, priority, next_sync_at)

@@ -1,4 +1,8 @@
-// app.js v3.3 - Top Traders + Tokens + Investor Classification + Behavior Filter + Guide
+// app.js v3.4 - Top Traders + Tokens + Investor Classification + Behavior Filter + Guide
+// Cambios 29-abr-2026:
+// - P&L, REALIZED y UNREALIZED se muestran en USD (antes decían SOL pero venían en USD).
+// - Columna INVESTED reemplazada por UNREALIZED (USD), usando unrealizedpnl real.
+// - TOKENS ahora muestra el conteo real (tokenstraded) que llega del backend.
 const API_BASE = '/api/';
 let currentView = 'traders';
 let currentSort = 'pnl';
@@ -30,7 +34,7 @@ const VIEW_CONFIG = {
             { label: 'ROI %', sort: 'roi' },
             { label: 'Score', sort: 'score' },
             { label: 'Trades', sort: 'trades' },
-            { label: 'Invested', sort: 'invested' },
+            { label: 'Unrealized', sort: 'invested' },
             { label: 'Best Trade', sort: 'besttrade' },
         ],
         timeFilters: [
@@ -44,13 +48,13 @@ const VIEW_CONFIG = {
         defaultSort: 'pnl',
         headers: `<tr>
             <th class="th-token">TRADER</th>
-            <th>P&L (SOL)</th>
+            <th>P&L (USD)</th>
             <th>WIN RATE</th>
             <th>ROI %</th>
             <th>SCORE</th>
             <th>TRADES</th>
-            <th>INVESTED</th>
-            <th>REALIZED</th>
+            <th>UNREALIZED (USD)</th>
+            <th>REALIZED (USD)</th>
             <th>BEST TRADE</th>
             <th>WORST TRADE</th>
             <th>TOKENS</th>
@@ -89,11 +93,17 @@ const VIEW_CONFIG = {
 // ============================================================================
 // Formatting Functions
 // ============================================================================
-function formatSOL(val) {
-    if (!val) val = 0;
-    if (Math.abs(val) >= 1000) return val.toFixed(1);
-    if (Math.abs(val) < 1) return val.toFixed(4);
-    return val.toFixed(6);
+function formatUSD(val) {
+    if (val === null || val === undefined || val === 0) return '$0';
+    const abs = Math.abs(val);
+    const sign = val < 0 ? '-' : '';
+    let body;
+    if (abs >= 1e9) body = (abs / 1e9).toFixed(2) + 'B';
+    else if (abs >= 1e6) body = (abs / 1e6).toFixed(2) + 'M';
+    else if (abs >= 1e3) body = (abs / 1e3).toFixed(1) + 'K';
+    else if (abs >= 1) body = abs.toFixed(2);
+    else body = abs.toFixed(4);
+    return `${sign}$${body}`;
 }
 
 function formatPrice(price) {
@@ -135,17 +145,17 @@ function formatPercent(val) {
 }
 
 function formatPNL(val) {
-    if (!val || val === 0) return `<span class="neutral">0</span>`;
+    if (val === null || val === undefined || val === 0) return `<span class="neutral">$0</span>`;
     const cls = val > 0 ? 'pnl-positive' : 'pnl-negative';
     const sign = val > 0 ? '+' : '';
-    return `<span class="${cls}">${sign}${formatSOL(val)}</span>`;
+    return `<span class="${cls}">${sign}${formatUSD(val)}</span>`;
 }
 
 function formatPNLBig(val) {
-    if (!val || val === 0) return `<span class="neutral">0</span>`;
+    if (val === null || val === undefined || val === 0) return `<span class="neutral">$0</span>`;
     const cls = val > 0 ? 'positive' : 'negative';
     const sign = val > 0 ? '+' : '';
-    return `<span class="pnl-big ${cls}">${sign}${formatSOL(val)} SOL</span>`;
+    return `<span class="pnl-big ${cls}">${sign}${formatUSD(val)}</span>`;
 }
 
 function formatWinRate(rate) {
@@ -406,7 +416,7 @@ function renderTraders(traders) {
             <td>${formatROI(t.roipercentage)}</td>
             <td>${formatInvestorScore(score)}</td>
             <td>${formatNumber(t.totaltrades)}</td>
-            <td>${formatSOL(t.totalinvested)} SOL</td>
+            <td>${formatPNL(t.unrealizedpnl)}</td>
             <td>${formatPNL(t.totalrealized)}</td>
             <td>${formatPNL(t.besttrade)}</td>
             <td>${formatPNL(t.worsttrade)}</td>
@@ -603,4 +613,4 @@ fetchStats();
 setInterval(fetchData, REFRESH_INTERVAL);
 setInterval(fetchStats, 60000);
 
-console.log('✅ Memecoin Screener v3.3: Top Traders + Tokens + Investor Classification + Guide');
+console.log('✅ Memecoin Screener v3.4: USD fix + real tokens traded');
