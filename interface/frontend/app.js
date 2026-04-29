@@ -35,7 +35,7 @@ const VIEW_CONFIG = {
             { label: 'Score', sort: 'score' },
             { label: 'Trades', sort: 'trades' },
             { label: 'Unrealized', sort: 'invested' },
-            { label: 'Best Trade', sort: 'besttrade' },
+            { label: 'Best Token', sort: 'besttrade' },
         ],
         timeFilters: [
             { label: '1H', value: '1h' },
