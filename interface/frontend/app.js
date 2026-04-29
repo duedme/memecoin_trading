@@ -1,8 +1,10 @@
-// app.js v3.4 - Top Traders + Tokens + Investor Classification + Behavior Filter + Guide
-// Cambios 29-abr-2026:
-// - P&L, REALIZED y UNREALIZED se muestran en USD (antes decían SOL pero venían en USD).
-// - Columna INVESTED reemplazada por UNREALIZED (USD), usando unrealizedpnl real.
-// - TOKENS ahora muestra el conteo real (tokenstraded) que llega del backend.
+// app.js v3.5 - Top Traders + Tokens + Investor Classification + Behavior Filter + Guide
+// Cambios 29-abr-2026 (v3.5):
+// - Ocultas columnas 5M y TXNS (eran placeholder/no confiables).
+// - Eliminado filtro "Txns" (mapeaba a volumen).
+// - LAST SEEN → LAST SYNC con tooltip.
+// - Stat "txns/24h" → "wallets refreshed (24h)".
+// - Tooltips de freshness en headers cacheados.
 const API_BASE = '/api/';
 let currentView = 'traders';
 let currentSort = 'pnl';
@@ -48,44 +50,43 @@ const VIEW_CONFIG = {
         defaultSort: 'pnl',
         headers: `<tr>
             <th class="th-token">TRADER</th>
-            <th>P&L (USD)</th>
-            <th>WIN RATE</th>
-            <th>ROI %</th>
-            <th>SCORE</th>
-            <th>TRADES</th>
-            <th>UNREALIZED (USD)</th>
-            <th>REALIZED (USD)</th>
-            <th>BEST TOKEN (USD)</th>
-            <th>WORST TOKEN (USD)</th>
-            <th>TOKENS</th>
-            <th>LAST SEEN</th>
+            <th title="Total profit & loss in USD (cached, 30min–several hours)">P&L (USD)</th>
+            <th title="Win rate from cached PnL (30min–several hours)">WIN RATE</th>
+            <th title="ROI % from cached PnL">ROI %</th>
+            <th title="Investor score 0–100, derived by our classifier">SCORE</th>
+            <th title="Trade count from cached PnL">TRADES</th>
+            <th title="Unrealized PnL in USD">UNREALIZED (USD)</th>
+            <th title="Realized PnL in USD">REALIZED (USD)</th>
+            <th title="Best token by PnL in our cache (not necessarily a single trade)">BEST TOKEN (USD)</th>
+            <th title="Worst token by PnL in our cache">WORST TOKEN (USD)</th>
+            <th title="Distinct tokens where this wallet appears as top trader in our cache">TOKENS</th>
+            <th title="Last time our worker synced this wallet (NOT last on-chain activity)">LAST SYNC</th>
         </tr>`,
     },
     tokens: {
         filters: [
             { label: 'Volume', sort: 'volume' },
             { label: 'MCap', sort: 'mcap' },
-            { label: 'Gainers', sort: 'change24h' },
+            { label: 'Gainers (24h)', sort: 'change24h' },
             { label: 'Investors', sort: 'investors' },
-            { label: 'Txns', sort: 'txns' },
+            // 'Txns' eliminado: mapeaba a volume_24h en backend, era engañoso.
             { label: 'Newest', sort: 'age' },
         ],
         timeFilters: [],
         defaultSort: 'volume',
+        // 5M y TXNS ocultos. Si más adelante se llenan, vuelven aquí.
         headers: `<tr>
             <th class="th-token">TOKEN</th>
-            <th>PRICE</th>
-            <th>AGE</th>
-            <th>INVESTORS</th>
-            <th>TXNS</th>
-            <th>VOLUME</th>
-            <th>MAKERS</th>
-            <th>5M</th>
-            <th>1H</th>
-            <th>6H</th>
-            <th>24H</th>
-            <th>LIQUIDITY</th>
-            <th>MCAP</th>
+            <th title="Last cached price (5–15 min)">PRICE</th>
+            <th title="Time since token was first detected">AGE</th>
+            <th title="Classified investors holding positions in this token">INVESTORS</th>
+            <th title="24h trading volume (cached)">VOLUME</th>
+            <th title="Holder count (cached, ~5–15 min)">HOLDERS</th>
+            <th title="Price change vs 1h ago, computed from local price history">1H</th>
+            <th title="Price change vs 6h ago, computed from local price history">6H</th>
+            <th title="Price change vs 24h ago, computed from local price history">24H</th>
+            <th title="Liquidity (cached)">LIQUIDITY</th>
+            <th title="Market cap (cached)">MCAP</th>
         </tr>`,
     },
 };
@@ -136,7 +137,7 @@ function formatNumber(num) {
 
 function formatPercent(val) {
     if (val === null || val === undefined) return `<span class="neutral">–</span>`;
-    const cls = val > 0 ? 'positive' : 'negative';
+    const cls = val > 0 ? 'positive' : (val < 0 ? 'negative' : 'neutral');
     let formatted;
     if (Math.abs(val) >= 1000) formatted = val.toLocaleString('en-US', { maximumFractionDigits: 0 });
     else if (Math.abs(val) >= 100) formatted = val.toFixed(0);
@@ -213,25 +214,17 @@ function formatInvestorScore(score) {
     return `<span class="inv-score-cell ${cls}">${score}</span>`;
 }
 
-// ============================================================================
-// formatInvestors - Investor badges in tokens table
-// ============================================================================
 function formatInvestors(investors) {
     if (!investors || !investors.total) return `<span class="neutral">–</span>`;
-
     const inv = investors;
     let badges = [];
-
     if (inv.elite > 0) badges.push(`<span class="inv-badge inv-elite" title="${inv.elite} Elite Traders">⭐${inv.elite}</span>`);
     if (inv.profitable > 0) badges.push(`<span class="inv-badge inv-profitable" title="${inv.profitable} Profitable Traders">💰${inv.profitable}</span>`);
     if (inv.regular > 0) badges.push(`<span class="inv-badge inv-regular" title="${inv.regular} Regular Traders">👤${inv.regular}</span>`);
-
     const humanPct = inv.total > 0 ? Math.round((inv.humans / inv.total) * 100) : 0;
-
     let qualityClass = 'inv-quality-high';
     if (humanPct < 40) qualityClass = 'inv-quality-low';
     else if (humanPct < 70) qualityClass = 'inv-quality-mid';
-
     return `<div class="investors-cell">
         <div class="inv-count">${inv.total}</div>
         <div class="inv-badges">${badges.join('')}</div>
@@ -242,55 +235,41 @@ function formatInvestors(investors) {
 }
 
 // ============================================================================
-// Behavior Filter Logic
+// Behavior Filter Logic (sin cambios)
 // ============================================================================
 function filterByBehavior(data, behavior) {
     if (behavior === 'all') return data;
-
     switch (behavior) {
-        case 'human':
-            return data.filter(t => t.classification && t.classification.behavior === 'human');
-        case 'bot':
-            return data.filter(t => t.classification && t.classification.behavior === 'bot');
-        case 'suspicious':
-            return data.filter(t => t.classification && t.classification.behavior === 'suspicious');
-        case 'elite':
-            return data.filter(t => t.classification && t.classification.investortype === 'elite');
-        case 'profitable':
-            return data.filter(t => t.classification && t.classification.investortype === 'profitable');
-        case 'regular':
-            return data.filter(t => t.classification && t.classification.investortype === 'regular');
-        case 'bot-profitable':
-            return data.filter(t => t.classification && t.classification.investortype === 'bot-profitable');
-        case 'bot-regular':
-            return data.filter(t => t.classification && t.classification.investortype === 'bot-regular');
-        case 'losing':
-            return data.filter(t => t.classification && t.classification.investortype === 'losing');
-        default:
-            return data;
+        case 'human': return data.filter(t => t.classification && t.classification.behavior === 'human');
+        case 'bot': return data.filter(t => t.classification && t.classification.behavior === 'bot');
+        case 'suspicious': return data.filter(t => t.classification && t.classification.behavior === 'suspicious');
+        case 'elite': return data.filter(t => t.classification && t.classification.investortype === 'elite');
+        case 'profitable': return data.filter(t => t.classification && t.classification.investortype === 'profitable');
+        case 'regular': return data.filter(t => t.classification && t.classification.investortype === 'regular');
+        case 'bot-profitable': return data.filter(t => t.classification && t.classification.investortype === 'bot-profitable');
+        case 'bot-regular': return data.filter(t => t.classification && t.classification.investortype === 'bot-regular');
+        case 'losing': return data.filter(t => t.classification && t.classification.investortype === 'losing');
+        default: return data;
     }
 }
 
 function getFilteredTraders() {
     let filtered = [...allData];
     filtered = filterByBehavior(filtered, currentBehaviorFilter);
-
     if (searchTerm) {
         const term = searchTerm.toLowerCase();
-        filtered = filtered.filter(t => 
+        filtered = filtered.filter(t =>
             t.walletaddress.toLowerCase().includes(term) ||
             (t.tags && t.tags.toLowerCase().includes(term)) ||
             (t.classification && t.classification.investortype && t.classification.investortype.toLowerCase().includes(term))
         );
     }
-
     return filtered;
 }
 
 function updateBehaviorDropdownCounts() {
     const sel = document.getElementById('behaviorFilter');
     if (!sel || !allData.length) return;
-
     const counts = {
         all: allData.length,
         human: allData.filter(t => t.classification && t.classification.behavior === 'human').length,
@@ -303,7 +282,6 @@ function updateBehaviorDropdownCounts() {
         'bot-regular': allData.filter(t => t.classification && t.classification.investortype === 'bot-regular').length,
         losing: allData.filter(t => t.classification && t.classification.investortype === 'losing').length,
     };
-
     for (const opt of sel.options) {
         const v = opt.value;
         if (counts[v] !== undefined) {
@@ -323,12 +301,10 @@ async function fetchData() {
             const url = `${API_BASE}top-traders?sort=${currentSort}&order=${currentOrder}&limit=50&mintrades=3&timerange=${currentTimeRange}`;
             const res = await fetch(url);
             const data = await res.json();
-
             if (data.success) {
                 allData = data.traders;
                 updateBehaviorDropdownCounts();
-                const filtered = getFilteredTraders();
-                renderTraders(filtered);
+                renderTraders(getFilteredTraders());
                 updateStatus(true, data.count, 'traders');
             } else {
                 allData = [];
@@ -339,7 +315,6 @@ async function fetchData() {
             const url = `${API_BASE}tokens?sort=${currentSort}&order=${currentOrder}&limit=50`;
             const res = await fetch(url);
             const data = await res.json();
-
             if (data.success) {
                 allData = data.tokens;
                 renderTokens(allData);
@@ -366,8 +341,8 @@ async function fetchStats() {
         if (data.success) {
             document.getElementById('statTokens').textContent = `${data.totaltokens.toLocaleString()} tokens`;
             document.getElementById('statWallets').textContent = `${data.totalwallets.toLocaleString()} wallets`;
-            document.getElementById('statTxns').textContent = `${data.transactions24h.toLocaleString()} txns/24h`;
-
+            // Honesto: el backend cuenta wallets refrescadas en últimas 24h, no transacciones.
+            document.getElementById('statTxns').textContent = `${data.transactions24h.toLocaleString()} wallets refreshed (24h)`;
             if (data.classifications && data.classifications.total > 0) {
                 const c = data.classifications;
                 const classEl = document.getElementById('statClassifications');
@@ -376,13 +351,11 @@ async function fetchStats() {
                 }
             }
         }
-    } catch (err) {
-        // silent
-    }
+    } catch (err) { /* silent */ }
 }
 
 // ============================================================================
-// Render Top Traders
+// Render Top Traders (colspan 12)
 // ============================================================================
 function renderTraders(traders) {
     const tbody = document.getElementById('tableBody');
@@ -390,7 +363,6 @@ function renderTraders(traders) {
         tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:40px;color:#5c5e64">${searchTerm || currentBehaviorFilter !== 'all' ? 'No traders found with that filter' : 'No traders with enough trades'}</td></tr>`;
         return;
     }
-
     tbody.innerHTML = traders.map((t, i) => {
         const rank = i + 1;
         const rankClass = rank === 1 ? 'gold' : rank === 2 ? 'silver' : rank === 3 ? 'bronze' : '';
@@ -399,7 +371,6 @@ function renderTraders(traders) {
         const shortAddr = `${t.walletaddress.slice(0, 6)}...${t.walletaddress.slice(-4)}`;
         const classificationBadge = formatInvestorBadge(t.classification);
         const score = t.classification ? t.classification.investorscore : 0;
-
         return `<tr onclick="window.open('https://solscan.io/account/${t.walletaddress}','_blank')" title="${t.walletaddress}">
             <td>
                 <div class="trader-cell">
@@ -421,38 +392,34 @@ function renderTraders(traders) {
             <td>${formatPNL(t.besttrade)}</td>
             <td>${formatPNL(t.worsttrade)}</td>
             <td>${t.tokenstraded}</td>
-            <td class="age">${t.lastactivity}</td>
+            <td class="age" title="Last time our worker synced this wallet">${t.lastactivity}</td>
         </tr>`;
     }).join('');
 }
 
 // ============================================================================
-// Render Tokens
+// Render Tokens (colspan 11 — sin 5M ni TXNS)
 // ============================================================================
 function renderTokens(tokens) {
     const tbody = document.getElementById('tableBody');
     let filtered = tokens;
-
     if (searchTerm) {
         const term = searchTerm.toLowerCase();
-        filtered = tokens.filter(t => 
+        filtered = tokens.filter(t =>
             (t.name && t.name.toLowerCase().includes(term)) ||
             (t.symbol && t.symbol.toLowerCase().includes(term)) ||
             (t.mintaddress && t.mintaddress.toLowerCase().includes(term))
         );
     }
-
     if (!filtered || filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="13" style="text-align:center;padding:40px;color:#5c5e64">${searchTerm ? 'No tokens found' : 'No data available'}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:40px;color:#5c5e64">${searchTerm ? 'No tokens found' : 'No data available'}</td></tr>`;
         return;
     }
-
     tbody.innerHTML = filtered.map((t, i) => {
         const imgHTML = t.imageurl ? `<img src="${t.imageurl}" alt="">` : '💎';
         const ammBadge = t.amm ? `<span class="badge badge-amm">${t.amm}</span>` : '';
         let displaySymbol = t.symbol || '???';
         let displayName = t.name || 'Unknown';
-
         return `<tr onclick="window.open('https://dexscreener.com/solana/${t.mintaddress}','_blank')" title="${t.mintaddress}">
             <td>
                 <div class="token-cell">
@@ -467,10 +434,8 @@ function renderTokens(tokens) {
             <td class="price">${formatPrice(t.price)}</td>
             <td class="age">${t.age}</td>
             <td>${formatInvestors(t.investors)}</td>
-            <td>${formatNumber(t.txns)}</td>
             <td>${formatCompact(t.volume24h)}</td>
             <td>${formatNumber(t.makers)}</td>
-            <td>${formatPercent(t.pct5m)}</td>
             <td>${formatPercent(t.pct1h)}</td>
             <td>${formatPercent(t.pct6h)}</td>
             <td>${formatPercent(t.pct24h)}</td>
@@ -493,23 +458,22 @@ function switchView(view) {
     searchTerm = '';
     document.getElementById('searchBox').value = '';
     allData = [];
-    document.getElementById('tableBody').innerHTML = `<tr><td colspan="13" style="text-align:center;padding:40px;color:#5c5e64">Loading data...</td></tr>`;
+    const colspan = view === 'traders' ? 12 : 11;
+    document.getElementById('tableBody').innerHTML = `<tr><td colspan="${colspan}" style="text-align:center;padding:40px;color:#5c5e64">Loading data...</td></tr>`;
 
     document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
     document.querySelector(`.view-btn[data-view="${view}"]`).classList.add('active');
-
     document.getElementById('tableHead').innerHTML = config.headers;
 
     const subfilters = document.getElementById('subfilters');
     let filtersHTML = '';
-
-    filtersHTML += config.filters.map((f, i) => 
+    filtersHTML += config.filters.map((f, i) =>
         `<button class="filter-btn sort-filter${i === 0 ? ' active' : ''}" data-sort="${f.sort}">${f.label}</button>`
     ).join('');
 
     if (config.timeFilters && config.timeFilters.length > 0) {
         filtersHTML += `<span style="border-left:1px solid #2a2d35;height:20px;margin:0 8px;align-self:center"></span>`;
-        filtersHTML += config.timeFilters.map(tf => 
+        filtersHTML += config.timeFilters.map(tf =>
             `<button class="filter-btn time-filter${tf.value === 'all' ? ' active' : ''}" data-time="${tf.value}">${tf.label}</button>`
         ).join('');
 
@@ -564,13 +528,12 @@ function switchView(view) {
     if (behaviorSelect) {
         behaviorSelect.addEventListener('change', (e) => {
             currentBehaviorFilter = e.target.value;
-            const filtered = getFilteredTraders();
-            renderTraders(filtered);
+            renderTraders(getFilteredTraders());
         });
     }
 
-    document.getElementById('searchBox').placeholder = view === 'traders' 
-        ? 'Search wallet, tag or type...' 
+    document.getElementById('searchBox').placeholder = view === 'traders'
+        ? 'Search wallet, tag or type...'
         : 'Search token or paste address...';
 
     fetchData();
@@ -579,7 +542,6 @@ function switchView(view) {
 function updateStatus(connected, count, type, error) {
     const statusEl = document.getElementById('connectionStatus');
     const updateEl = document.getElementById('lastUpdate');
-
     if (connected) {
         const label = type === 'traders' ? 'traders' : 'tokens';
         const timeLabel = currentView === 'traders' && currentTimeRange !== 'all' ? ` (${currentTimeRange.toUpperCase()})` : '';
@@ -600,12 +562,8 @@ document.querySelectorAll('.view-btn').forEach(btn => {
 
 document.getElementById('searchBox').addEventListener('input', (e) => {
     searchTerm = e.target.value;
-    if (currentView === 'traders') {
-        const filtered = getFilteredTraders();
-        renderTraders(filtered);
-    } else {
-        renderTokens(allData);
-    }
+    if (currentView === 'traders') renderTraders(getFilteredTraders());
+    else renderTokens(allData);
 });
 
 switchView('traders');
@@ -613,4 +571,4 @@ fetchStats();
 setInterval(fetchData, REFRESH_INTERVAL);
 setInterval(fetchStats, 60000);
 
-console.log('✅ Memecoin Screener v3.4: USD fix + real tokens traded');
+console.log('✅ Memecoin Screener v3.5: hidden 5M/TXNS + LAST SYNC + honest stats label');
