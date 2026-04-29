@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS wallet_pnl_cache (
     realized_pnl_usd NUMERIC(20,4),
     unrealized_pnl_usd NUMERIC(20,4),
     total_pnl_usd NUMERIC(20,4),
-    roi_pct NUMERIC(10,4),
+    roi_pct NUMERIC(20,4),
     trade_count INTEGER,
     win_rate NUMERIC(5,2),
     raw_json JSONB,
