@@ -55,9 +55,12 @@ class TokenSyncer:
             FROM tokens t
             LEFT JOIN token_market_cache c ON c.token_id = t.token_id
             WHERE t.status = 'active'
-              AND (c.last_updated IS NULL
-                   OR c.last_updated < NOW() - make_interval(secs => %s))
-            ORDER BY c.last_updated NULLS FIRST
+            AND (c.last_updated IS NULL
+                OR c.last_updated < NOW() - make_interval(secs => %s))
+            ORDER BY
+            (c.last_updated IS NULL) ASC,
+            c.last_updated ASC NULLS LAST,
+            t.detected_at DESC
             LIMIT %s
         """, (TTL["token_market"], batch_size))
         rows = cur.fetchall()
