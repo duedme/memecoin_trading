@@ -279,16 +279,28 @@ def tokens(
     limit: int = 50,
     status: str = "active",
 ):
-    sortmap = {
+    # Sorts que se resuelven en SQL
+    sortmap_sql = {
         "volume":    "c.volume_24h",
         "mcap":      "c.market_cap",
         "price":     "c.price_usd",
         "liquidity": "c.liquidity",
         "age":       "t.detected_at",
-        "txns":      "c.volume_24h",
         "investors": "inv.total_investors",
     }
-    col = sortmap.get(sort, "c.volume_24h")
+    # Sorts que se resuelven en Python (sobre pct_change calculado)
+    sortmap_python = {
+        "change1h":  "pct_1h",
+        "change6h":  "pct_6h",
+        "change24h": "pct_24h",
+    }
+
+    if sort in sortmap_python:
+        # Pre-orden en SQL por volumen para que el LIMIT no pierda los relevantes
+        col = "c.volume_24h"
+    else:
+        col = sortmap_sql.get(sort, "c.volume_24h")
+
     direction = "DESC" if order.lower() == "desc" else "ASC"
     limit = min(max(int(limit), 1), 200)
 
@@ -353,25 +365,25 @@ def tokens(
         symbol = r.get("symbol") or f"{mint[:4]}..."
 
         out.append({
-            "token_id":    r["token_id"],
+            "token_id":     r["token_id"],
             "mint_address": mint,
-            "name":        name,
-            "symbol":      symbol,
-            "image_url":   None,
-            "amm":         r.get("source"),
-            "age":         format_age(r.get("detected_at")),
-            "created_at":  r["detected_at"].isoformat() if r.get("detected_at") else None,
-            "price":       float(r["price_usd"]) if r.get("price_usd") else 0,
-            "liquidity":   float(r.get("c_liquidity") or r.get("t_liquidity") or 0),
-            "volume_24h":  float(r.get("volume_24h") or 0),
-            "market_cap":  float(r.get("market_cap") or 0),
-            "fdv":         float(r.get("fdv") or 0),
-            "txns":        0,                                # pendiente: sin fuente
-            "makers":      int(r.get("holder_count") or 0),
-            "pct_5m":      None,                             # apagada hasta TTL <2min
-            "pct_1h":      pct_change(r.get("price_usd"), r.get("price_1h_ago")),
-            "pct_6h":      pct_change(r.get("price_usd"), r.get("price_6h_ago")),
-            "pct_24h":     pct_change(r.get("price_usd"), r.get("price_24h_ago")),
+            "name":         name,
+            "symbol":       symbol,
+            "image_url":    None,
+            "amm":          r.get("source"),
+            "age":          format_age(r.get("detected_at")),
+            "created_at":   r["detected_at"].isoformat() if r.get("detected_at") else None,
+            "price":        float(r["price_usd"]) if r.get("price_usd") else 0,
+            "liquidity":    float(r.get("c_liquidity") or r.get("t_liquidity") or 0),
+            "volume_24h":   float(r.get("volume_24h") or 0),
+            "market_cap":   float(r.get("market_cap") or 0),
+            "fdv":          float(r.get("fdv") or 0),
+            "txns":         0,     # pendiente: sin fuente real (no exponer en sortmap)
+            "makers":       int(r.get("holder_count") or 0),
+            "pct_5m":       None,  # apagada hasta TTL <2min
+            "pct_1h":       pct_change(r.get("price_usd"), r.get("price_1h_ago")),
+            "pct_6h":       pct_change(r.get("price_usd"), r.get("price_6h_ago")),
+            "pct_24h":      pct_change(r.get("price_usd"), r.get("price_24h_ago")),
             "investors": {
                 "total":      int(r.get("total_investors") or 0),
                 "elite":      int(r.get("elite_count") or 0),
@@ -382,6 +394,15 @@ def tokens(
                 "avg_score":  float(r.get("avg_score") or 0),
             },
         })
+
+    # Re-ordenar en Python si el sort es un % calculado
+    if sort in sortmap_python:
+        key = sortmap_python[sort]
+        reverse = (order.lower() == "desc")
+        out.sort(
+            key=lambda x: (x[key] is None, x[key] if x[key] is not None else 0),
+            reverse=reverse,
+        )
 
     return {"success": True, "count": len(out), "tokens": out}
 
