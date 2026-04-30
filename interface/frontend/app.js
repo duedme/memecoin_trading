@@ -1,5 +1,9 @@
-// app.js v3.5 - Top Traders + Tokens + Investor Classification + Behavior Filter + Guide
-// Cambios 29-abr-2026 (v3.5):
+// app.js v3.6 - Top Traders + Tokens + Investor Classification + Behavior Filter + Guide
+// Cambios 30-abr-2026 (v3.6):
+// - Nuevo helper formatPctHistory: tooltip honesto cuando 1H/6H/24H aún no tiene historia.
+// - Headers 1H/6H/24H aclaran que muestran "—" hasta acumular snapshots.
+// - Filtros añadidos: Gainers 1H y Gainers 6H (backend ya soporta change1h/6h/24h).
+// Cambios previos 29-abr-2026 (v3.5):
 // - Ocultas columnas 5M y TXNS (eran placeholder/no confiables).
 // - Eliminado filtro "Txns" (mapeaba a volumen).
 // - LAST SEEN → LAST SYNC con tooltip.
@@ -67,7 +71,9 @@ const VIEW_CONFIG = {
         filters: [
             { label: 'Volume', sort: 'volume' },
             { label: 'MCap', sort: 'mcap' },
-            { label: 'Gainers (24h)', sort: 'change24h' },
+            { label: 'Gainers 1H', sort: 'change1h' },
+            { label: 'Gainers 6H', sort: 'change6h' },
+            { label: 'Gainers 24H', sort: 'change24h' },
             { label: 'Investors', sort: 'investors' },
             // 'Txns' eliminado: mapeaba a volume_24h en backend, era engañoso.
             { label: 'Newest', sort: 'age' },
@@ -82,9 +88,9 @@ const VIEW_CONFIG = {
             <th title="Classified investors holding positions in this token">INVESTORS</th>
             <th title="24h trading volume (cached)">VOLUME</th>
             <th title="Holder count (cached, ~5–15 min)">HOLDERS</th>
-            <th title="Price change vs 1h ago, computed from local price history">1H</th>
-            <th title="Price change vs 6h ago, computed from local price history">6H</th>
-            <th title="Price change vs 24h ago, computed from local price history">24H</th>
+            <th title="Price change vs 1h ago. Computed from local snapshots. Shows '—' until enough history exists.">1H</th>
+            <th title="Price change vs 6h ago. Computed from local snapshots. Shows '—' until enough history exists.">6H</th>
+            <th title="Price change vs 24h ago. Computed from local snapshots. Shows '—' until enough history exists.">24H</th>
             <th title="Liquidity (cached)">LIQUIDITY</th>
             <th title="Market cap (cached)">MCAP</th>
         </tr>`,
@@ -145,6 +151,22 @@ function formatPercent(val) {
     return `<span class="${cls}">${formatted}%</span>`;
 }
 
+// Igual que formatPercent pero con tooltip honesto cuando aún no hay historia
+// suficiente en token_price_history para esa ventana.
+// windowLabel es "1h" | "6h" | "24h" para construir el mensaje.
+function formatPctHistory(val, windowLabel) {
+    if (val === null || val === undefined) {
+        return `<span class="neutral" title="Not enough local price history yet for the ${windowLabel} window. Builds up over time as the worker collects snapshots.">–</span>`;
+    }
+    const cls = val > 0 ? 'positive' : (val < 0 ? 'negative' : 'neutral');
+    let formatted;
+    if (Math.abs(val) >= 1000) formatted = val.toLocaleString('en-US', { maximumFractionDigits: 0 });
+    else if (Math.abs(val) >= 100) formatted = val.toFixed(0);
+    else formatted = val.toFixed(2);
+    const sign = val > 0 ? '+' : '';
+    return `<span class="${cls}" title="Computed from local price history (${windowLabel} window)">${sign}${formatted}%</span>`;
+}
+
 function formatPNL(val) {
     if (val === null || val === undefined || val === 0) return `<span class="neutral">$0</span>`;
     const cls = val > 0 ? 'pnl-positive' : 'pnl-negative';
@@ -187,7 +209,7 @@ function renderTags(tags) {
 // Classification Formatting
 // ============================================================================
 function formatInvestorBadge(classification) {
-    if (!classification || !classification.investortype || classification.investortype === 'unclassified') return '';
+    if (!classification || !classification.investor_type || classification.investor_type === 'unclassified') return '';
     const c = classification;
     const typeConfig = {
         'elite': { cls: 'inv-elite', icon: '⭐' },
@@ -198,10 +220,10 @@ function formatInvestorBadge(classification) {
         'casual': { cls: 'inv-casual', icon: '🎲' },
         'losing': { cls: 'inv-losing', icon: '📉' },
     };
-    const cfg = typeConfig[c.investortype] || { cls: '', icon: '' };
-    let html = `<span class="tag ${cfg.cls}">${cfg.icon} ${c.investortype.replace('-', ' ')}</span>`;
-    if (c.investorscore > 0) {
-        html += `<span class="inv-score">${c.investorscore}</span>`;
+    const cfg = typeConfig[c.investor_type] || { cls: '', icon: '' };
+    let html = `<span class="tag ${cfg.cls}">${cfg.icon} ${c.investor_type.replace('-', ' ')}</span>`;
+    if (c.investor_score > 0) {
+        html += `<span class="inv-score">${c.investor_score}</span>`;
     }
     return html;
 }
@@ -243,12 +265,12 @@ function filterByBehavior(data, behavior) {
         case 'human': return data.filter(t => t.classification && t.classification.behavior === 'human');
         case 'bot': return data.filter(t => t.classification && t.classification.behavior === 'bot');
         case 'suspicious': return data.filter(t => t.classification && t.classification.behavior === 'suspicious');
-        case 'elite': return data.filter(t => t.classification && t.classification.investortype === 'elite');
-        case 'profitable': return data.filter(t => t.classification && t.classification.investortype === 'profitable');
-        case 'regular': return data.filter(t => t.classification && t.classification.investortype === 'regular');
-        case 'bot-profitable': return data.filter(t => t.classification && t.classification.investortype === 'bot-profitable');
-        case 'bot-regular': return data.filter(t => t.classification && t.classification.investortype === 'bot-regular');
-        case 'losing': return data.filter(t => t.classification && t.classification.investortype === 'losing');
+        case 'elite': return data.filter(t => t.classification && t.classification.investor_type === 'elite');
+        case 'profitable': return data.filter(t => t.classification && t.classification.investor_type === 'profitable');
+        case 'regular': return data.filter(t => t.classification && t.classification.investor_type === 'regular');
+        case 'bot-profitable': return data.filter(t => t.classification && t.classification.investor_type === 'bot-profitable');
+        case 'bot-regular': return data.filter(t => t.classification && t.classification.investor_type === 'bot-regular');
+        case 'losing': return data.filter(t => t.classification && t.classification.investor_type === 'losing');
         default: return data;
     }
 }
@@ -259,9 +281,9 @@ function getFilteredTraders() {
     if (searchTerm) {
         const term = searchTerm.toLowerCase();
         filtered = filtered.filter(t =>
-            t.walletaddress.toLowerCase().includes(term) ||
+            t.wallet_address.toLowerCase().includes(term) ||
             (t.tags && t.tags.toLowerCase().includes(term)) ||
-            (t.classification && t.classification.investortype && t.classification.investortype.toLowerCase().includes(term))
+            (t.classification && t.classification.investor_type && t.classification.investor_type.toLowerCase().includes(term))
         );
     }
     return filtered;
@@ -275,12 +297,12 @@ function updateBehaviorDropdownCounts() {
         human: allData.filter(t => t.classification && t.classification.behavior === 'human').length,
         bot: allData.filter(t => t.classification && t.classification.behavior === 'bot').length,
         suspicious: allData.filter(t => t.classification && t.classification.behavior === 'suspicious').length,
-        elite: allData.filter(t => t.classification && t.classification.investortype === 'elite').length,
-        profitable: allData.filter(t => t.classification && t.classification.investortype === 'profitable').length,
-        regular: allData.filter(t => t.classification && t.classification.investortype === 'regular').length,
-        'bot-profitable': allData.filter(t => t.classification && t.classification.investortype === 'bot-profitable').length,
-        'bot-regular': allData.filter(t => t.classification && t.classification.investortype === 'bot-regular').length,
-        losing: allData.filter(t => t.classification && t.classification.investortype === 'losing').length,
+        elite: allData.filter(t => t.classification && t.classification.investor_type === 'elite').length,
+        profitable: allData.filter(t => t.classification && t.classification.investor_type === 'profitable').length,
+        regular: allData.filter(t => t.classification && t.classification.investor_type === 'regular').length,
+        'bot-profitable': allData.filter(t => t.classification && t.classification.investor_type === 'bot-profitable').length,
+        'bot-regular': allData.filter(t => t.classification && t.classification.investor_type === 'bot-regular').length,
+        losing: allData.filter(t => t.classification && t.classification.investor_type === 'losing').length,
     };
     for (const opt of sel.options) {
         const v = opt.value;
@@ -298,7 +320,7 @@ function updateBehaviorDropdownCounts() {
 async function fetchData() {
     try {
         if (currentView === 'traders') {
-            const url = `${API_BASE}top-traders?sort=${currentSort}&order=${currentOrder}&limit=50&mintrades=3&timerange=${currentTimeRange}`;
+            const url = `${API_BASE}top-traders?sort=${currentSort}&order=${currentOrder}&limit=50&min_trades=3&timerange=${currentTimeRange}`;
             const res = await fetch(url);
             const data = await res.json();
             if (data.success) {
@@ -339,10 +361,10 @@ async function fetchStats() {
         const res = await fetch(`${API_BASE}stats`);
         const data = await res.json();
         if (data.success) {
-            document.getElementById('statTokens').textContent = `${data.totaltokens.toLocaleString()} tokens`;
-            document.getElementById('statWallets').textContent = `${data.totalwallets.toLocaleString()} wallets`;
+            document.getElementById('statTokens').textContent = `${data.total_tokens.toLocaleString()} tokens`;
+            document.getElementById('statWallets').textContent = `${data.total_wallets.toLocaleString()} wallets`;
             // Honesto: el backend cuenta wallets refrescadas en últimas 24h, no transacciones.
-            document.getElementById('statTxns').textContent = `${data.transactions24h.toLocaleString()} wallets refreshed (24h)`;
+            document.getElementById('statTxns').textContent = `${data.transactions_24h.toLocaleString()} wallets refreshed (24h)`;
             if (data.classifications && data.classifications.total > 0) {
                 const c = data.classifications;
                 const classEl = document.getElementById('statClassifications');
@@ -368,31 +390,31 @@ function renderTraders(traders) {
         const rankClass = rank === 1 ? 'gold' : rank === 2 ? 'silver' : rank === 3 ? 'bronze' : '';
         const avatarClass = rank === 1 ? 'top1' : rank === 2 ? 'top2' : rank === 3 ? 'top3' : 'normal';
         const rankIcon = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '';
-        const shortAddr = `${t.walletaddress.slice(0, 6)}...${t.walletaddress.slice(-4)}`;
+        const shortAddr = `${t.wallet_address.slice(0, 6)}...${t.wallet_address.slice(-4)}`;
         const classificationBadge = formatInvestorBadge(t.classification);
-        const score = t.classification ? t.classification.investorscore : 0;
-        return `<tr onclick="window.open('https://solscan.io/account/${t.walletaddress}','_blank')" title="${t.walletaddress}">
+        const score = t.classification ? t.classification.investor_score : 0;
+        return `<tr onclick="window.open('https://solscan.io/account/${t.wallet_address}','_blank')" title="${t.wallet_address}">
             <td>
                 <div class="trader-cell">
                     <span class="trader-rank ${rankClass}">${rank}</span>
                     <div class="trader-avatar ${avatarClass}">${rankIcon}</div>
                     <div class="trader-info">
                         <span class="trader-address">${shortAddr}</span>
-                        <span class="trader-tags">${renderTags(t.tags)}${classificationBadge} · ${t.tokenstraded} tokens traded</span>
+                        <span class="trader-tags">${renderTags(t.tags)}${classificationBadge} · ${t.tokens_traded} tokens traded</span>
                     </div>
                 </div>
             </td>
-            <td>${formatPNLBig(t.totalpnl)}</td>
-            <td>${formatWinRate(t.winrate)}</td>
-            <td>${formatROI(t.roipercentage)}</td>
+            <td>${formatPNLBig(t.total_pnl)}</td>
+            <td>${formatWinRate(t.win_rate)}</td>
+            <td>${formatROI(t.roi_percentage)}</td>
             <td>${formatInvestorScore(score)}</td>
-            <td>${formatNumber(t.totaltrades)}</td>
-            <td>${formatPNL(t.unrealizedpnl)}</td>
-            <td>${formatPNL(t.totalrealized)}</td>
-            <td>${formatPNL(t.besttrade)}</td>
-            <td>${formatPNL(t.worsttrade)}</td>
-            <td>${t.tokenstraded}</td>
-            <td class="age" title="Last time our worker synced this wallet">${t.lastactivity}</td>
+            <td>${formatNumber(t.total_trades)}</td>
+            <td>${formatPNL(t.unrealized_pnl)}</td>
+            <td>${formatPNL(t.total_realized)}</td>
+            <td>${formatPNL(t.best_trade)}</td>
+            <td>${formatPNL(t.worst_trade)}</td>
+            <td>${t.tokens_traded}</td>
+            <td class="age" title="Last time our worker synced this wallet">${t.last_activity}</td>
         </tr>`;
     }).join('');
 }
@@ -408,7 +430,7 @@ function renderTokens(tokens) {
         filtered = tokens.filter(t =>
             (t.name && t.name.toLowerCase().includes(term)) ||
             (t.symbol && t.symbol.toLowerCase().includes(term)) ||
-            (t.mintaddress && t.mintaddress.toLowerCase().includes(term))
+            (t.mint_address && t.mint_address.toLowerCase().includes(term))
         );
     }
     if (!filtered || filtered.length === 0) {
@@ -416,11 +438,11 @@ function renderTokens(tokens) {
         return;
     }
     tbody.innerHTML = filtered.map((t, i) => {
-        const imgHTML = t.imageurl ? `<img src="${t.imageurl}" alt="">` : '💎';
+        const imgHTML = t.image_url ? `<img src="${t.image_url}" alt="">` : '💎';
         const ammBadge = t.amm ? `<span class="badge badge-amm">${t.amm}</span>` : '';
         let displaySymbol = t.symbol || '???';
         let displayName = t.name || 'Unknown';
-        return `<tr onclick="window.open('https://dexscreener.com/solana/${t.mintaddress}','_blank')" title="${t.mintaddress}">
+        return `<tr onclick="window.open('https://dexscreener.com/solana/${t.mint_address}','_blank')" title="${t.mint_address}">
             <td>
                 <div class="token-cell">
                     <span class="token-rank">${i + 1}</span>
@@ -434,13 +456,13 @@ function renderTokens(tokens) {
             <td class="price">${formatPrice(t.price)}</td>
             <td class="age">${t.age}</td>
             <td>${formatInvestors(t.investors)}</td>
-            <td>${formatCompact(t.volume24h)}</td>
+            <td>${formatCompact(t.volume_24h)}</td>
             <td>${formatNumber(t.makers)}</td>
-            <td>${formatPercent(t.pct1h)}</td>
-            <td>${formatPercent(t.pct6h)}</td>
-            <td>${formatPercent(t.pct24h)}</td>
+            <td>${formatPctHistory(t.pct_1h,  '1h')}</td>
+            <td>${formatPctHistory(t.pct_6h,  '6h')}</td>
+            <td>${formatPctHistory(t.pct_24h, '24h')}</td>
             <td>${formatCompact(t.liquidity)}</td>
-            <td>${formatCompact(t.marketcap)}</td>
+            <td>${formatCompact(t.market_cap)}</td>
         </tr>`;
     }).join('');
 }
@@ -571,4 +593,4 @@ fetchStats();
 setInterval(fetchData, REFRESH_INTERVAL);
 setInterval(fetchStats, 60000);
 
-console.log('✅ Memecoin Screener v3.5: hidden 5M/TXNS + LAST SYNC + honest stats label');
+console.log('✅ Memecoin Screener v3.6: pct_* honest tooltips + Gainers 1H/6H/24H filters');
