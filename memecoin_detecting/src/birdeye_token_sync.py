@@ -3,7 +3,7 @@
 import time
 import logging
 import psycopg2
-import psycopg2.extras  # ← FIX: import a nivel módulo, no dentro de __main__
+import psycopg2.extras
 from psycopg2.extras import Json
 from datetime import datetime
 from birdeye_client import BirdeyeClient
@@ -12,6 +12,10 @@ from shared_config import DB_CONFIG, TTL
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+# Cada cuánto purgar history vieja (segundos)
+HISTORY_RETENTION_DAYS = 7
+HISTORY_CLEANUP_INTERVAL = 3600  # 1h
 
 
 class TokenSyncer:
@@ -46,7 +50,6 @@ class TokenSyncer:
 
     def refresh_market_data(self, batch_size=50):
         cur = self.conn.cursor()
-        # FIX: usar make_interval para que el parámetro sí se interpole
         cur.execute("""
             SELECT t.token_id, t.mint_address
             FROM tokens t
@@ -68,35 +71,64 @@ class TokenSyncer:
 
         up = self.conn.cursor()
         count = 0
+        history_inserts = 0
         for tid, mint in rows:
             p = prices.get(mint) if isinstance(prices, dict) else None
             if not p:
                 continue
-            # FIX: Json(p) ya siempre disponible porque el import está a nivel módulo
+
+            price_val = p.get("value")
+            liquidity = p.get("liquidity")
+            # Birdeye multi_price puede traer volume en distintos campos según versión
+            vol_24h = p.get("volume24h") or p.get("volume_24h") or p.get("v24hUSD")
+
             up.execute("""
                 INSERT INTO token_market_cache
-                  (token_id, price_usd, liquidity, raw_json, last_updated)
-                VALUES (%s, %s, %s, %s, NOW())
+                  (token_id, price_usd, liquidity, volume_24h, raw_json, last_updated)
+                VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (token_id) DO UPDATE SET
                   price_usd    = EXCLUDED.price_usd,
                   liquidity    = EXCLUDED.liquidity,
+                  volume_24h   = COALESCE(EXCLUDED.volume_24h, token_market_cache.volume_24h),
                   raw_json     = EXCLUDED.raw_json,
                   last_updated = NOW()
-            """, (tid, p.get("value"), p.get("liquidity"), Json(p)))
-            up.execute("""
-                INSERT INTO token_price_history (token_id, price_usd)
-                VALUES (%s, %s)
-            """, (tid, p.get("value")))
+            """, (tid, price_val, liquidity, vol_24h, Json(p)))
             count += 1
+
+            # Solo guardamos history si hay precio real (evita ruido en pct_change)
+            if price_val is not None:
+                up.execute("""
+                    INSERT INTO token_price_history (token_id, time, price_usd, volume_24h)
+                    VALUES (%s, NOW(), %s, %s)
+                """, (tid, price_val, vol_24h))
+                history_inserts += 1
+
         self.conn.commit()
         up.close()
-        logger.info(f"💰 Market data refrescada en {count} tokens")
+        logger.info(f"💰 Market data refrescada en {count} tokens "
+                    f"(history +{history_inserts})")
         return count
+
+    def cleanup_old_history(self):
+        """Elimina snapshots más viejos que HISTORY_RETENTION_DAYS para evitar
+        que token_price_history crezca sin tope."""
+        cur = self.conn.cursor()
+        cur.execute("""
+            DELETE FROM token_price_history
+            WHERE time < NOW() - make_interval(days => %s)
+        """, (HISTORY_RETENTION_DAYS,))
+        deleted = cur.rowcount
+        self.conn.commit()
+        cur.close()
+        if deleted:
+            logger.info(f"🧹 Purgadas {deleted} filas viejas de token_price_history")
+        return deleted
 
     def run(self):
         last_listings = 0
         last_market = 0
-        logger.info("TokenSyncer corriendo (new_listings + market_data)")
+        last_cleanup = 0
+        logger.info("TokenSyncer corriendo (new_listings + market_data + history)")
         while True:
             try:
                 now = time.time()
@@ -106,6 +138,9 @@ class TokenSyncer:
                 if now - last_market >= TTL["token_market"]:
                     self.refresh_market_data(batch_size=50)
                     last_market = now
+                if now - last_cleanup >= HISTORY_CLEANUP_INTERVAL:
+                    self.cleanup_old_history()
+                    last_cleanup = now
                 time.sleep(5)
             except Exception as e:
                 logger.error(f"Error loop: {e}")
