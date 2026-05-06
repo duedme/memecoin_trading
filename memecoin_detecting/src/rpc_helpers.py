@@ -1,130 +1,41 @@
-#!/usr/bin/env python3
-"""
-rpc_helpers.py — Wrappers mínimos sobre el nodo Agave local.
-
-Cubre las llamadas que usan los workers:
-- getHealth
-- getSlot
-- getAccountInfo
-- getMultipleAccounts
-- getTokenSupply
-- getTokenAccountBalance
-- getSignaturesForAddress
-- getTransaction
-- getProgramAccounts
-
-Todas usan RPC_HTTP_URL. El WS PubSub se maneja en los workers que lo necesitan
-(detector / wallet tracker) con 'websockets' + RPC_WS_URL.
-"""
-
-import json
-import logging
 import time
-from typing import Any, Dict, List, Optional
-
 import requests
+from shared_config import RPC_HTTP_URL, get_logger
 
-from shared_config import RPC_HTTP_URL, RPC_TIMEOUT
+log = get_logger("rpc_helpers")
 
-logger = logging.getLogger(__name__)
-
-# Metaplex Token Metadata program (para leer nombre/symbol/uri on-chain)
-METAPLEX_METADATA_PROGRAM_ID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
-
-
-class RpcError(Exception):
-    pass
-
-
-def _rpc_call(method: str, params: List[Any], retries: int = 3,
-              backoff: float = 0.5) -> Any:
-    """
-    JSON-RPC POST al nodo local. Reintenta con backoff exponencial.
-    Devuelve el campo 'result'. Lanza RpcError en fallo.
-    """
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params,
-    }
-    last_err: Optional[Exception] = None
-    for attempt in range(retries):
+def rpc_call(method: str, params=None, timeout: float = 10.0, retries: int = 3):
+    payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}
+    last_err = None
+    for i in range(retries):
         try:
-            resp = requests.post(
-                RPC_HTTP_URL,
-                headers={"Content-Type": "application/json"},
-                data=json.dumps(payload),
-                timeout=RPC_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            r = requests.post(RPC_HTTP_URL, json=payload, timeout=timeout)
+            r.raise_for_status()
+            data = r.json()
             if "error" in data:
-                raise RpcError(f"{method} -> {data['error']}")
+                last_err = data["error"]
+                log.warning("RPC %s error: %s", method, data["error"])
+                time.sleep(0.5 * (i + 1))
+                continue
             return data.get("result")
         except Exception as e:
-            last_err = e
-            wait = backoff * (2 ** attempt)
-            logger.warning(
-                "RPC %s fallo (intento %d/%d): %s — reintento en %.1fs",
-                method, attempt + 1, retries, e, wait,
-            )
-            time.sleep(wait)
-    raise RpcError(f"{method} agotó {retries} reintentos: {last_err}")
+            last_err = str(e)
+            log.warning("RPC %s fallo (%d/%d): %s", method, i + 1, retries, e)
+            time.sleep(0.5 * (i + 1))
+    log.error("RPC %s agotó reintentos: %s", method, last_err)
+    return None
 
+def get_slot():
+    return rpc_call("getSlot")
 
-# --------- Helpers puntuales ---------
-
-def get_health() -> str:
-    return _rpc_call("getHealth", [])
-
-def get_slot() -> int:
-    return int(_rpc_call("getSlot", [{"commitment": "confirmed"}]))
-
-def get_account_info(pubkey: str, encoding: str = "base64") -> Optional[Dict]:
-    res = _rpc_call("getAccountInfo", [pubkey, {"encoding": encoding,
-                                                "commitment": "confirmed"}])
-    return res.get("value") if isinstance(res, dict) else None
-
-def get_multiple_accounts(pubkeys: List[str], encoding: str = "base64"
-                          ) -> List[Optional[Dict]]:
-    res = _rpc_call("getMultipleAccounts",
-                    [pubkeys, {"encoding": encoding, "commitment": "confirmed"}])
-    return res.get("value", []) if isinstance(res, dict) else []
-
-def get_token_supply(mint: str) -> Optional[Dict]:
-    res = _rpc_call("getTokenSupply", [mint, {"commitment": "confirmed"}])
-    return res.get("value") if isinstance(res, dict) else None
-
-def get_token_account_balance(token_account: str) -> Optional[Dict]:
-    res = _rpc_call("getTokenAccountBalance",
-                    [token_account, {"commitment": "confirmed"}])
-    return res.get("value") if isinstance(res, dict) else None
-
-def get_signatures_for_address(address: str, limit: int = 100,
-                               before: Optional[str] = None,
-                               until: Optional[str] = None) -> List[Dict]:
-    params: Dict[str, Any] = {"limit": limit, "commitment": "confirmed"}
+def get_signatures_for_address(address: str, limit: int = 25, before: str = None):
+    params = [address, {"limit": limit}]
     if before:
-        params["before"] = before
-    if until:
-        params["until"] = until
-    return _rpc_call("getSignaturesForAddress", [address, params]) or []
+        params[1]["before"] = before
+    return rpc_call("getSignaturesForAddress", params) or []
 
-def get_transaction(signature: str) -> Optional[Dict]:
-    return _rpc_call(
+def get_transaction(signature: str):
+    return rpc_call(
         "getTransaction",
-        [signature, {
-            "encoding": "jsonParsed",
-            "commitment": "confirmed",
-            "maxSupportedTransactionVersion": 0,
-        }],
+        [signature, {"maxSupportedTransactionVersion": 0, "encoding": "jsonParsed"}],
     )
-
-def get_program_accounts(program_id: str,
-                         filters: Optional[List[Dict]] = None,
-                         encoding: str = "base64") -> List[Dict]:
-    config: Dict[str, Any] = {"encoding": encoding, "commitment": "confirmed"}
-    if filters:
-        config["filters"] = filters
-    return _rpc_call("getProgramAccounts", [program_id, config]) or []

@@ -1,33 +1,6 @@
-# requirements.txt
-# Dependencias para Fase 2 del Proyecto Memecoins
-# VERSIÓN CORREGIDA: añadido aiohttp y python-dotenv
-
-# Base de datos
 psycopg2-binary==2.9.9
-
-# Async HTTP (para webhook_server y metrics_collector)
-aiohttp==3.9.1
-
-# Variables de entorno (opcional pero recomendado)
-python-dotenv==1.0.0
-
-# Utilidades
-python-dateutil==2.8.2
-
-# CLI mejorado
-tabulate==0.9.0
-colorama==0.4.6
-
-# Logging estructurado (opcional)
-python-json-logger==2.0.7
-
-# Monitoreo (opcional)
-# psutil==5.9.6
-
-# Testing (opcional)
-# pytest==7.4.3
-# pytest-asyncio==0.21.1
-
 requests==2.32.3
 websockets==12.0
+python-dotenv==1.0.1
+solders==0.21.0
 base58==2.1.1
