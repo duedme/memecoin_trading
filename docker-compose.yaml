@@ -19,55 +19,46 @@ services:
       timeout: 3s
       retries: 5
 
-  # ===== Detector de tokens =====
+  # ===== Detector de tokens (habla con RPC local) =====
   detector:
     build:
       context: ./memecoin_detecting
       dockerfile: docker/Dockerfile
     restart: always
     env_file: ./memecoin_detecting/.env
-    environment:
-      - DB_HOST=db
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    network_mode: host
     depends_on:
       db:
         condition: service_healthy
     command: ["python3", "detector_memecoins.py"]
 
-  # ===== Collector de métricas =====
+  # ===== Collector de métricas (habla con RPC local) =====
   metrics_collector:
     build:
       context: ./memecoin_detecting
       dockerfile: docker/Dockerfile
     restart: always
     env_file: ./memecoin_detecting/.env
-    environment:
-      - DB_HOST=db
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    network_mode: host
     depends_on:
       db:
         condition: service_healthy
     command: ["python3", "metrics_collector.py"]
 
-  # ===== Tracker de wallets =====
+  # ===== Tracker de wallets (habla con RPC local) =====
   wallet-tracker:
     build:
       context: ./memecoin_detecting
       dockerfile: docker/Dockerfile
     restart: always
     env_file: ./memecoin_detecting/.env
-    environment:
-      - DB_HOST=db
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    network_mode: host
     depends_on:
       db:
         condition: service_healthy
     command: ["python3", "enhanced_wallet_tracker.py"]
 
-  # ===== Clasificador de wallets (loop) =====
+  # ===== Clasificador de wallets (solo DB, bridge normal) =====
   wallet_classifier:
     build:
       context: ./memecoin_detecting
@@ -76,14 +67,12 @@ services:
     env_file: ./memecoin_detecting/.env
     environment:
       - DB_HOST=db
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
     command: sh -c "while true; do python3 wallet_classifier.py; sleep 1800; done"
 
-  # ===== API =====
+  # ===== API (bridge normal, publica 8200) =====
   api-server:
     build:
       context: ./interface/backend
