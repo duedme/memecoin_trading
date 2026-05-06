@@ -95,7 +95,7 @@ services:
   # ===== API =====
   api-server:
     build:
-      context: ./interface_backend
+      context: ./interface/backend
       dockerfile: Dockerfile
     restart: always
     env_file: ./memecoin_detecting/.env
