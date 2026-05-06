@@ -89,7 +89,7 @@ services:
       - |
         while true; do
           python3 wallet_classifier.py >> /var/log/memecoin/wallet_classifier.log 2>&1
-          sleep ${CLASSIFIER_LOOP_INTERVAL:-1800}
+          sleep $${CLASSIFIER_LOOP_INTERVAL:-1800}
         done
 
   # ===== API =====
