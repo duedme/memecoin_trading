@@ -76,6 +76,7 @@ services:
     env_file: ./memecoin_detecting/.env
     environment:
       - DB_HOST=db
+      - CLASSIFIER_LOOP_INTERVAL=1800
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -89,7 +90,7 @@ services:
       - |
         while true; do
           python3 wallet_classifier.py >> /var/log/memecoin/wallet_classifier.log 2>&1
-          sleep $${CLASSIFIER_LOOP_INTERVAL:-1800}
+          sleep "$CLASSIFIER_LOOP_INTERVAL"
         done
 
   # ===== API =====
