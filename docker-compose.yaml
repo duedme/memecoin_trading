@@ -1,6 +1,5 @@
 services:
-
-#-----Postgres-----
+  # ===== Postgres + TimescaleDB =====
   db:
     image: timescale/timescaledb:latest-pg16
     restart: always
@@ -10,17 +9,17 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       TIMESCALEDB_TELEMETRY: "off"
     ports:
-      - 5432:5432
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./memecoin_detecting/scripts/setup_memecoins_db.sql:/docker-entrypoint-initdb.d/01-schema.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 5s
       timeout: 3s
       retries: 5
 
-#-----Servidor---
+  # ===== Detector de tokens =====
   detector:
     build:
       context: ./memecoin_detecting
@@ -29,11 +28,14 @@ services:
     env_file: ./memecoin_detecting/.env
     environment:
       - DB_HOST=db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
     command: ["python3", "detector_memecoins.py"]
 
+  # ===== Collector de métricas =====
   metrics_collector:
     build:
       context: ./memecoin_detecting
@@ -42,11 +44,14 @@ services:
     env_file: ./memecoin_detecting/.env
     environment:
       - DB_HOST=db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
     command: ["python3", "metrics_collector.py"]
 
+  # ===== Tracker de wallets =====
   wallet-tracker:
     build:
       context: ./memecoin_detecting
@@ -55,11 +60,14 @@ services:
     env_file: ./memecoin_detecting/.env
     environment:
       - DB_HOST=db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
     command: ["python3", "enhanced_wallet_tracker.py"]
 
+  # ===== Clasificador de wallets (loop) =====
   wallet_classifier:
     build:
       context: ./memecoin_detecting
@@ -68,17 +76,26 @@ services:
     env_file: ./memecoin_detecting/.env
     environment:
       - DB_HOST=db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
     volumes:
-    - /var/log/memecoin:/var/log/memecoin
-    command: sh -c "while true; do python3 wallet_classifier.py >> /var/log/memecoin/wallet_classifier.log 2>&1; sleep 1800; done"
+      - /var/log/memecoin:/var/log/memecoin
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          python3 wallet_classifier.py >> /var/log/memecoin/wallet_classifier.log 2>&1
+          sleep ${CLASSIFIER_LOOP_INTERVAL:-1800}
+        done
 
-#-----Backend----
+  # ===== API =====
   api-server:
     build:
-      context: ./interface/backend
+      context: ./interface_backend
       dockerfile: Dockerfile
     restart: always
     env_file: ./memecoin_detecting/.env
