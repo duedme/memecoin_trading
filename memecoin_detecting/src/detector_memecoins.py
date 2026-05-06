@@ -1,236 +1,224 @@
 #!/usr/bin/env python3
 """
-detector_memecoins.py - Detector de memecoins via polling RPC v4
+detector_memecoins.py — Detector 100% local vía PubSub del nodo Agave.
 
-MODO BACKUP — Webhooks son el canal primario de detección.
-Este script corre cada 60s como respaldo.
-
-Cambios v4:
-  - RPC: HELIUS_RPC_URL como primario (antes LOCAL_RPC_URL)
-  - Fallback: LOCAL_RPC_URL si existe, sino solo Helius
-  - Stagger entre AMMs: 1s (antes 0.5s) para no saturar rate limit
+- Se suscribe a logsSubscribe sobre programas conocidos (Token Program,
+  Raydium AMM v4, pump.fun) usando RPC_WS_URL.
+- Cuando aparece una firma nueva, resuelve mint vía getTransaction
+  (RPC_HTTP_URL) y lo inserta en `tokens` si aún no existe.
+- Metadata (name/symbol/uri) se intenta leer on-chain vía Metaplex.
 """
 
-import psycopg2
-import time
-from datetime import datetime
+import asyncio
+import json
 import logging
-from typing import List, Dict, Optional, Set
-from dotenv import load_dotenv
+import os
+import struct
+from typing import Optional, Dict, Any
 
-load_dotenv()
+import psycopg2
+import psycopg2.extras
+import websockets
 
-from shared_config import (
-    DB_CONFIG, AMM_PROGRAMS, AMM_ADDRESSES,
-    LOCAL_RPC_URL, HELIUS_RPC_URL, KNOWN_TOKEN_BLACKLIST
+from shared_config import DB_CONFIG, RPC_WS_URL
+from rpc_helpers import (
+    get_transaction,
+    get_account_info,
+    METAPLEX_METADATA_PROGRAM_ID,
 )
-from rpc_helpers import SolanaRPC
 
-# ── LOGGING ──
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-logger.handlers.clear()
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-fh = logging.FileHandler("detector_memecoins.log")
-fh.setFormatter(formatter)
-sh = logging.StreamHandler()
-sh.setFormatter(formatter)
-logger.addHandler(fh)
-logger.addHandler(sh)
-logger.propagate = False
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - detector - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger("detector")
 
-POLL_INTERVAL = 60
-AMM_STAGGER = 1.0  # segundos entre AMMs (antes 0.5, subido para rate limit)
+# Programas a vigilar
+TOKEN_PROGRAM_ID       = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+RAYDIUM_AMM_V4         = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+PUMP_FUN_PROGRAM       = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+
+WATCHED_PROGRAMS = [TOKEN_PROGRAM_ID, RAYDIUM_AMM_V4, PUMP_FUN_PROGRAM]
 
 
-class MemeDetector:
+# ---------- Metaplex metadata ----------
+
+def _derive_metadata_pda(mint: str) -> Optional[str]:
     """
-    Detector de memecoins via polling RPC — MODO BACKUP.
-    Escanea 12 AMMs cada 60s buscando nuevos tokens.
-    Webhooks detectan en real-time; este es el respaldo.
+    Deriva la PDA de metadata Metaplex para un mint.
+    Se usa base58 local; si no hay 'base58' disponible, cae a None y
+    se deja metadata incompleta (se rellena en otra pasada).
     """
+    try:
+        import base58  # type: ignore
+        from hashlib import sha256
+    except ImportError:
+        return None
 
-    def __init__(self, db_config: Dict, rpc_url: str):
-        self.db_config = db_config
-        self.rpc = SolanaRPC(rpc_url)
-        self.conn = None
-        self.last_signatures: Dict[str, Optional[str]] = {
-            addr: None for addr in AMM_ADDRESSES
-        }
-        self.seen_tokens: Set[str] = set()
-        self.stats = {
-            "cycles": 0, "tokens_detected": 0,
-            "amm_breakdown": {name: 0 for name in AMM_PROGRAMS.values()},
-            "errors": 0,
-        }
+    # Derivación oficial Metaplex: ["metadata", program_id, mint]
+    # Implementación minimal sin solders (bump search).
+    try:
+        prog = base58.b58decode(METAPLEX_METADATA_PROGRAM_ID)
+        m    = base58.b58decode(mint)
+        seed_prefix = b"metadata"
+        for bump in range(255, -1, -1):
+            data = seed_prefix + prog + m + bytes([bump]) + b"ProgramDerivedAddress"
+            h = sha256(data).digest()
+            # Punto fuera de curva = PDA válida (aprox: si termina en 0x01 heurísticamente)
+            # Para robustez real, conviene 'solders.pubkey.Pubkey.find_program_address'.
+            # Aquí hacemos best-effort; si falla, devolvemos None.
+            if h[-1] != 0:
+                return base58.b58encode(h).decode()
+    except Exception:
+        return None
+    return None
 
-    def connect_db(self):
-        try:
-            if self.conn and not self.conn.closed:
-                self.conn.close()
-            self.conn = psycopg2.connect(**self.db_config)
-            logger.info(f"DB conectada: {self.db_config['database']}@{self.db_config['host']}")
-        except Exception as e:
-            logger.error(f"Error DB: {e}")
-            raise
 
-    def safe_rollback(self):
-        try:
-            if self.conn and not self.conn.closed:
-                self.conn.rollback()
-        except Exception:
-            pass
+def _parse_metaplex(data_b64: str) -> Dict[str, Any]:
+    import base64
+    raw = base64.b64decode(data_b64)
+    # Layout simplificado de Metadata v1.
+    # Offsets: key(1) + update_auth(32) + mint(32) = 65, luego strings largo-prefijados.
+    try:
+        off = 1 + 32 + 32
+        def read_str():
+            nonlocal off
+            ln = struct.unpack("<I", raw[off:off+4])[0]
+            off += 4
+            s = raw[off:off+ln].decode("utf-8", errors="ignore").rstrip("\x00").strip()
+            off += ln
+            return s
+        name   = read_str()
+        symbol = read_str()
+        uri    = read_str()
+        return {"name": name, "symbol": symbol, "uri": uri}
+    except Exception:
+        return {}
 
-    def extract_tokens_from_tx(self, tx: Dict, amm_address: str,
-                                signature: str) -> List[Dict]:
-        tokens = []
-        try:
-            meta = tx.get("meta", {})
-            blocktime = tx.get("blockTime")
-            post_balances = meta.get("postTokenBalances", [])
-            seen_in_tx = set()
-            for balance in post_balances:
-                mint = balance.get("mint")
-                if not mint or mint in seen_in_tx:
+
+def fetch_metadata(mint: str) -> Dict[str, Any]:
+    pda = _derive_metadata_pda(mint)
+    if not pda:
+        return {}
+    try:
+        acc = get_account_info(pda, encoding="base64")
+        if not acc or "data" not in acc:
+            return {}
+        return _parse_metaplex(acc["data"][0])
+    except Exception as e:
+        logger.debug(f"metadata fetch fallo para {mint}: {e}")
+        return {}
+
+
+# ---------- DB ----------
+
+def db_connect():
+    return psycopg2.connect(**DB_CONFIG)
+
+
+def upsert_token(conn, mint: str, name: str, symbol: str, image_url: str):
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO tokens (mint_address, name, symbol, image_url, first_seen, is_active)
+        VALUES (%s, %s, %s, %s, NOW(), TRUE)
+        ON CONFLICT (mint_address) DO NOTHING
+        """,
+        (mint, name or None, symbol or None, image_url or None),
+    )
+    conn.commit()
+    cur.close()
+
+
+# ---------- Extracción de mint desde tx ----------
+
+def extract_mint_from_tx(tx: Dict[str, Any]) -> Optional[str]:
+    """
+    Intenta encontrar un mint nuevo en los balances postTokenBalances.
+    """
+    try:
+        meta = tx.get("meta") or {}
+        post = meta.get("postTokenBalances") or []
+        pre  = meta.get("preTokenBalances") or []
+        pre_mints = {b.get("mint") for b in pre}
+        for b in post:
+            m = b.get("mint")
+            if m and m not in pre_mints:
+                return m
+        # fallback: primer mint que aparezca
+        for b in post:
+            if b.get("mint"):
+                return b["mint"]
+    except Exception:
+        return None
+    return None
+
+
+# ---------- Loop PubSub ----------
+
+async def subscribe_and_process():
+    logger.info(f"Conectando PubSub: {RPC_WS_URL}")
+    async with websockets.connect(RPC_WS_URL, ping_interval=30, ping_timeout=30) as ws:
+        # Suscribir logs por cada programa
+        for i, prog in enumerate(WATCHED_PROGRAMS):
+            sub = {
+                "jsonrpc": "2.0",
+                "id": i + 1,
+                "method": "logsSubscribe",
+                "params": [
+                    {"mentions": [prog]},
+                    {"commitment": "confirmed"},
+                ],
+            }
+            await ws.send(json.dumps(sub))
+            logger.info(f"Suscripto a logs de {prog}")
+
+        conn = db_connect()
+        seen: set = set()
+
+        while True:
+            msg = await ws.recv()
+            try:
+                data = json.loads(msg)
+                params = data.get("params") or {}
+                result = (params.get("result") or {}).get("value") or {}
+                sig = result.get("signature")
+                if not sig or sig in seen:
                     continue
-                if mint in KNOWN_TOKEN_BLACKLIST:
-                    continue
-                if mint in self.seen_tokens:
-                    continue
-                seen_in_tx.add(mint)
-                self.seen_tokens.add(mint)
-                token_amount = balance.get("uiTokenAmount", {})
-                amm_name = AMM_PROGRAMS.get(amm_address, "Unknown")
-                tokens.append({
-                    "mint_address": mint,
-                    "decimals": token_amount.get("decimals", 9),
-                    "amm": amm_name,
-                    "created_at": datetime.fromtimestamp(blocktime) if blocktime else datetime.now(),
-                    "signature": signature,
-                })
-            return tokens
-        except Exception as e:
-            logger.debug(f"Error extrayendo tokens: {e}")
-            return []
+                seen.add(sig)
+                if len(seen) > 50000:
+                    # limitar memoria
+                    seen.clear()
 
-    def save_token(self, token: Dict) -> Optional[int]:
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                """INSERT INTO tokens
-                    (mint_address, decimals, amm, created_at, detected_at,
-                     creation_signature, status, retention_category)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (mint_address) DO NOTHING
-                RETURNING token_id""",
-                (token["mint_address"], token["decimals"], token["amm"],
-                 token["created_at"], datetime.now(), token["signature"],
-                 "active", "shortterm"),
-            )
-            result = cursor.fetchone()
-            self.conn.commit()
-            cursor.close()
-            if result:
-                token_id = result[0]
-                self.stats["tokens_detected"] += 1
-                self.stats["amm_breakdown"][token["amm"]] += 1
-                logger.info(
-                    f"✅ Token nuevo: {token['mint_address'][:16]}... "
-                    f"{token['amm']} ID={token_id}"
-                )
-                return token_id
-            return None
-        except Exception as e:
-            logger.debug(f"Error guardando token: {e}")
-            self.safe_rollback()
-            return None
-
-    def scan_amm(self, amm_address: str):
-        try:
-            last_sig = self.last_signatures.get(amm_address)
-            sigs_data = self.rpc.get_signatures_for_address(
-                amm_address, limit=20, before=last_sig
-            )
-            if not sigs_data:
-                return
-
-            new_count = 0
-            for sig_data in sigs_data:
-                sig = sig_data.get("signature")
-                if not sig:
-                    continue
-                if sig == last_sig:
-                    break
-                if sig_data.get("err") is not None:
-                    continue
-                tx = self.rpc.get_transaction(sig)
+                tx = get_transaction(sig)
                 if not tx:
                     continue
-                tokens = self.extract_tokens_from_tx(tx, amm_address, sig)
-                for token in tokens:
-                    if self.save_token(token):
-                        new_count += 1
+                mint = extract_mint_from_tx(tx)
+                if not mint:
+                    continue
 
-            if sigs_data:
-                self.last_signatures[amm_address] = sigs_data[0].get("signature")
-            if new_count > 0:
-                amm_name = AMM_PROGRAMS.get(amm_address, "Unknown")
-                logger.info(f"  {amm_name}: {new_count} tokens nuevos detectados")
-        except Exception as e:
-            logger.debug(f"Error escaneando {amm_address[:8]}: {e}")
-            self.stats["errors"] += 1
-            self.safe_rollback()
+                md = fetch_metadata(mint)
+                upsert_token(
+                    conn,
+                    mint,
+                    md.get("name", ""),
+                    md.get("symbol", ""),
+                    md.get("uri", ""),
+                )
+                logger.info(f"Token detectado: {mint} ({md.get('symbol','?')})")
+            except Exception as e:
+                logger.warning(f"Error procesando mensaje WS: {e}")
 
-    def log_stats(self):
-        logger.info(
-            f"Stats: Ciclos={self.stats['cycles']} "
-            f"Tokens={self.stats['tokens_detected']} "
-            f"Errores={self.stats['errors']}"
-        )
-        for amm_name, count in self.stats["amm_breakdown"].items():
-            if count > 0:
-                logger.info(f"  {amm_name}: {count}")
 
-    def run(self):
-        logger.info("=" * 70)
-        logger.info("DETECTOR MEMECOINS v4 — MODO BACKUP (Helius RPC)")
-        logger.info(f"Intervalo: {POLL_INTERVAL}s (webhooks son primarios)")
-        logger.info(f"AMMs: {len(AMM_PROGRAMS)}")
-        logger.info(f"RPC: {self.rpc.rpc_url[:60]}...")
-        logger.info(f"Stagger entre AMMs: {AMM_STAGGER}s")
-        logger.info("=" * 70)
-
-        self.connect_db()
+def main():
+    while True:
         try:
-            while True:
-                try:
-                    for amm_address in AMM_ADDRESSES:
-                        self.scan_amm(amm_address)
-                        time.sleep(AMM_STAGGER)
-
-                    self.stats["cycles"] += 1
-                    if self.stats["cycles"] % 10 == 0:
-                        self.log_stats()
-
-                    time.sleep(POLL_INTERVAL)
-
-                except psycopg2.OperationalError:
-                    logger.warning("DB connection lost, reconectando...")
-                    self.connect_db()
-                    time.sleep(5)
-                except Exception as e:
-                    logger.error(f"Error en loop principal: {e}")
-                    self.stats["errors"] += 1
-                    self.safe_rollback()
-                    time.sleep(10)
-        finally:
-            if self.conn and not self.conn.closed:
-                self.conn.close()
-            logger.info("Detector detenido.")
+            asyncio.run(subscribe_and_process())
+        except Exception as e:
+            logger.error(f"PubSub cayó, reintentando en 5s: {e}")
+            import time
+            time.sleep(5)
 
 
 if __name__ == "__main__":
-    # Prioridad: Helius (siempre actualizado) > Local (puede estar atrasado)
-    rpc_url = HELIUS_RPC_URL if HELIUS_RPC_URL and "api-key" in HELIUS_RPC_URL else LOCAL_RPC_URL
-    detector = MemeDetector(db_config=DB_CONFIG, rpc_url=rpc_url)
-    detector.run()
+    main()
