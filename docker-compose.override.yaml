@@ -25,15 +25,14 @@ services:
         condition: service_healthy
     command: ["python3", "tx_parser.py"]
 
-  position-reducer:
-    build:
-      context: ./memecoindetecting
-      dockerfile: ./docker/Dockerfile
+  posiCOUNT(*) FILTER (WHERE p.status = 'closed' AND p.realized_pnl_sol > 0) AS win ./docker/Dockerfile
     restart: always
     env_file:
       - ./.memecoindetecting.env
-    network_mode: host
-    depends_on:
-      db:
-        condition: service_healthy
-    command: ["python3", "position_reducer.py"]
+    network_COUNT(*) FILTER (WHERE p.status = 'closed' AND p.realized_pnl_sol > 0) AS winommand: ["python3", "position_reducer.py"]
+
+  walCOUNT(*) FILTER (WHERE p.status = 'closed' AND p.realized_pnl_sol > 0) AS win./docker/Dockerfile
+    restart: always
+    env_file:
+      - ./.memecoindetecting.env
+    netwoCOUNT(*) FILTER (WHERE p.status = 'closed' AND p.realized_pnl_sol > 0) AS win  command: ["python3", "wallet_reducer.py"]
