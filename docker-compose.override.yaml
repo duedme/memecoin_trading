@@ -89,3 +89,16 @@ services:
       db:
         condition: service_healthy
     command: ["python3", "price_updater.py"]
+
+  classifier-worker:
+    build:
+      context: ./memecoindetecting
+      dockerfile: ./docker/Dockerfile
+    restart: always
+    env_file:
+      - ./.memecoindetecting.env
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python3", "classifier_worker.py"]
