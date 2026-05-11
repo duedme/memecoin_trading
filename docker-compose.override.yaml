@@ -4,12 +4,10 @@ services:
       context: ./memecoindetecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file:
-      - ./.memecoindetecting.env
+    env_file: [./.memecoindetecting.env]
     network_mode: host
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
     command: ["python3", "chain_listener.py"]
 
   tx-parser:
@@ -17,12 +15,10 @@ services:
       context: ./memecoindetecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file:
-      - ./.memecoindetecting.env
+    env_file: [./.memecoindetecting.env]
     network_mode: host
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
     command: ["python3", "tx_parser.py"]
 
   position-reducer:
@@ -30,12 +26,10 @@ services:
       context: ./memecoindetecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file:
-      - ./.memecoindetecting.env
+    env_file: [./.memecoindetecting.env]
     network_mode: host
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
     command: ["python3", "position_reducer.py"]
 
   wallet-reducer:
@@ -43,12 +37,10 @@ services:
       context: ./memecoindetecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file:
-      - ./.memecoindetecting.env
+    env_file: [./.memecoindetecting.env]
     network_mode: host
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
     command: ["python3", "wallet_reducer.py"]
 
   token-trader-reducer:
@@ -56,12 +48,10 @@ services:
       context: ./memecoindetecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file:
-      - ./.memecoindetecting.env
+    env_file: [./.memecoindetecting.env]
     network_mode: host
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
     command: ["python3", "token_trader_reducer.py"]
 
   market-collector:
@@ -69,12 +59,10 @@ services:
       context: ./memecoindetecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file:
-      - ./.memecoindetecting.env
+    env_file: [./.memecoindetecting.env]
     network_mode: host
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
     command: ["python3", "market_collector.py"]
 
   price-updater:
@@ -82,12 +70,10 @@ services:
       context: ./memecoindetecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file:
-      - ./.memecoindetecting.env
+    env_file: [./.memecoindetecting.env]
     network_mode: host
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
     command: ["python3", "price_updater.py"]
 
   classifier-worker:
@@ -95,10 +81,30 @@ services:
       context: ./memecoindetecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file:
-      - ./.memecoindetecting.env
+    env_file: [./.memecoindetecting.env]
     network_mode: host
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
     command: ["python3", "classifier_worker.py"]
+
+  maintenance-worker:
+    build:
+      context: ./memecoindetecting
+      dockerfile: ./docker/Dockerfile
+    restart: always
+    env_file: [./.memecoindetecting.env]
+    network_mode: host
+    depends_on:
+      db: { condition: service_healthy }
+    command: ["python3", "maintenance_worker.py"]
+
+  # Legacy neutralizado (se elimina del compose base en próximo release)
+  metricscollector:
+    image: alpine:3.19
+    command: ["true"]
+    restart: "no"
+
+  walletclassifier:
+    image: alpine:3.19
+    command: ["true"]
+    restart: "no"
