@@ -63,3 +63,29 @@ services:
       db:
         condition: service_healthy
     command: ["python3", "token_trader_reducer.py"]
+
+  market-collector:
+    build:
+      context: ./memecoindetecting
+      dockerfile: ./docker/Dockerfile
+    restart: always
+    env_file:
+      - ./.memecoindetecting.env
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python3", "market_collector.py"]
+
+  price-updater:
+    build:
+      context: ./memecoindetecting
+      dockerfile: ./docker/Dockerfile
+    restart: always
+    env_file:
+      - ./.memecoindetecting.env
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python3", "price_updater.py"]
