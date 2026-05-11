@@ -25,14 +25,41 @@ services:
         condition: service_healthy
     command: ["python3", "tx_parser.py"]
 
-  posiCOUNT(*) FILTER (WHERE p.status = 'closed' AND p.realized_pnl_sol > 0) AS win ./docker/Dockerfile
+  position-reducer:
+    build:
+      context: ./memecoindetecting
+      dockerfile: ./docker/Dockerfile
     restart: always
     env_file:
       - ./.memecoindetecting.env
-    network_COUNT(*) FILTER (WHERE p.status = 'closed' AND p.realized_pnl_sol > 0) AS winommand: ["python3", "position_reducer.py"]
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python3", "position_reducer.py"]
 
-  walCOUNT(*) FILTER (WHERE p.status = 'closed' AND p.realized_pnl_sol > 0) AS win./docker/Dockerfile
+  wallet-reducer:
+    build:
+      context: ./memecoindetecting
+      dockerfile: ./docker/Dockerfile
     restart: always
     env_file:
       - ./.memecoindetecting.env
-    netwoCOUNT(*) FILTER (WHERE p.status = 'closed' AND p.realized_pnl_sol > 0) AS win  command: ["python3", "wallet_reducer.py"]
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python3", "wallet_reducer.py"]
+
+  token-trader-reducer:
+    build:
+      context: ./memecoindetecting
+      dockerfile: ./docker/Dockerfile
+    restart: always
+    env_file:
+      - ./.memecoindetecting.env
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python3", "token_trader_reducer.py"]
