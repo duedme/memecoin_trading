@@ -1,10 +1,10 @@
 services:
   chain-listener:
     build:
-      context: ./memecoindetecting
+      context: ./memecoin_detecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file: [./.memecoindetecting.env]
+    env_file: [./.memecoin_detecting.env]
     network_mode: host
     depends_on:
       db: { condition: service_healthy }
@@ -12,10 +12,10 @@ services:
 
   tx-parser:
     build:
-      context: ./memecoindetecting
+      context: ./memecoin_detecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file: [./.memecoindetecting.env]
+    env_file: [./.memecoin_detecting.env]
     network_mode: host
     depends_on:
       db: { condition: service_healthy }
@@ -23,10 +23,10 @@ services:
 
   position-reducer:
     build:
-      context: ./memecoindetecting
+      context: ./memecoin_detecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file: [./.memecoindetecting.env]
+    env_file: [./.memecoin_detecting.env]
     network_mode: host
     depends_on:
       db: { condition: service_healthy }
@@ -34,10 +34,10 @@ services:
 
   wallet-reducer:
     build:
-      context: ./memecoindetecting
+      context: ./memecoin_detecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file: [./.memecoindetecting.env]
+    env_file: [./.memecoin_detecting.env]
     network_mode: host
     depends_on:
       db: { condition: service_healthy }
@@ -45,10 +45,10 @@ services:
 
   token-trader-reducer:
     build:
-      context: ./memecoindetecting
+      context: ./memecoin_detecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file: [./.memecoindetecting.env]
+    env_file: [./.memecoin_detecting.env]
     network_mode: host
     depends_on:
       db: { condition: service_healthy }
@@ -56,10 +56,10 @@ services:
 
   market-collector:
     build:
-      context: ./memecoindetecting
+      context: ./memecoin_detecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file: [./.memecoindetecting.env]
+    env_file: [./.memecoin_detecting.env]
     network_mode: host
     depends_on:
       db: { condition: service_healthy }
@@ -67,10 +67,10 @@ services:
 
   price-updater:
     build:
-      context: ./memecoindetecting
+      context: ./memecoin_detecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file: [./.memecoindetecting.env]
+    env_file: [./.memecoin_detecting.env]
     network_mode: host
     depends_on:
       db: { condition: service_healthy }
@@ -78,10 +78,10 @@ services:
 
   classifier-worker:
     build:
-      context: ./memecoindetecting
+      context: ./memecoin_detecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file: [./.memecoindetecting.env]
+    env_file: [./.memecoin_detecting.env]
     network_mode: host
     depends_on:
       db: { condition: service_healthy }
@@ -89,10 +89,10 @@ services:
 
   maintenance-worker:
     build:
-      context: ./memecoindetecting
+      context: ./memecoin_detecting
       dockerfile: ./docker/Dockerfile
     restart: always
-    env_file: [./.memecoindetecting.env]
+    env_file: [./.memecoin_detecting.env]
     network_mode: host
     depends_on:
       db: { condition: service_healthy }
