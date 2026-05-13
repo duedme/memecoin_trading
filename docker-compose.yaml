@@ -1,0 +1,97 @@
+services:
+  # ===== Postgres + TimescaleDB =====
+  db:
+    image: timescale/timescaledb:latest-pg16
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      TIMESCALEDB_TELEMETRY: "off"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./memecoin_detecting/scripts/setup_memecoins_db.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./memecoin_detecting/src/002_realtime_schema.sql:/docker-entrypoint-initdb.d/02-realtime.sql:ro
+      - ./memecoin_detecting/scripts/003_wallet_pnl_cache_compat.sql:/docker-entrypoint-initdb.d/03-pnlcompat.sql:ro
+      - ./memecoin_detecting/scripts/004_token_investors.sql:/docker-entrypoint-initdb.d/04-investors.sql:ro
+      - ./memecoin_detecting/scripts/005_market_aggregates.sql:/docker-entrypoint-initdb.d/05-aggregates.sql:ro
+      - ./memecoin_detecting/scripts/006_classifier_incremental.sql:/docker-entrypoint-initdb.d/06-classifier.sql:ro
+      - ./memecoin_detecting/scripts/008_cleanup_observability.sql:/docker-entrypoint-initdb.d/08-observability.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ===== Detector de tokens (habla con RPC local) =====
+  detector:
+    build:
+      context: ./memecoin_detecting
+      dockerfile: docker/Dockerfile
+    restart: always
+    env_file: ./memecoin_detecting/.env
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python3", "detector_memecoins.py"]
+
+  # ===== Collector de métricas (habla con RPC local) =====
+  metrics_collector:
+    build:
+      context: ./memecoin_detecting
+      dockerfile: docker/Dockerfile
+    restart: always
+    env_file: ./memecoin_detecting/.env
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python3", "metrics_collector.py"]
+
+  # ===== Tracker de wallets (habla con RPC local) =====
+  wallet-tracker:
+    build:
+      context: ./memecoin_detecting
+      dockerfile: docker/Dockerfile
+    restart: always
+    env_file: ./memecoin_detecting/.env
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python3", "enhanced_wallet_tracker.py"]
+
+  # ===== Clasificador de wallets (solo DB, bridge normal) =====
+  wallet_classifier:
+    build:
+      context: ./memecoin_detecting
+      dockerfile: docker/Dockerfile
+    restart: always
+    env_file: ./memecoin_detecting/.env
+    environment:
+      - DB_HOST=db
+    depends_on:
+      db:
+        condition: service_healthy
+    command: sh -c "while true; do python3 wallet_classifier.py; sleep 1800; done"
+
+  # ===== API (bridge normal, publica 8200) =====
+  api-server:
+    build:
+      context: ./interface/backend
+      dockerfile: Dockerfile
+    restart: always
+    env_file: ./memecoin_detecting/.env
+    environment:
+      - DB_HOST=db
+    ports:
+      - "8200:8200"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
