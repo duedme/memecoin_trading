@@ -1,5 +1,5 @@
 """
-sharedconfig.py
+shared_config.py
 Configuración compartida. Soporta tanto nombres nuevos (DB_NAME, RPC_HTTP_URL)
 como legacy (DBNAME, RPCHTTPURL) para compatibilidad con el código actual.
 """
@@ -53,7 +53,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
-log = logging.getLogger("sharedconfig")
+log = logging.getLogger("shared_config")
 
 
 def getlogger(name: str) -> logging.Logger:

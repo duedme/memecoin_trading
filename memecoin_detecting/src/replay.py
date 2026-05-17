@@ -18,7 +18,7 @@ import sys
 import psycopg2
 import psycopg2.extras
 
-from sharedconfig import DBCONFIG, getlogger
+from shared_config import DBCONFIG, getlogger
 
 log = getlogger("replay")
 

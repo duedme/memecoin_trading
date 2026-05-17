@@ -5,3 +5,4 @@ repo*.txt
 out/
 cache/
 __pycache__
+.DS_Store

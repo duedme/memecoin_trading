@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import psycopg2
 import websockets
 
-from sharedconfig import (
+from shared_config import (
     DBCONFIG,
     RPC_WS_URL,
     REALTIME_ENABLED,

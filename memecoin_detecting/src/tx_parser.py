@@ -14,7 +14,7 @@ import psycopg2
 import psycopg2.extras
 import requests
 
-from sharedconfig import (
+from shared_config import (
     DBCONFIG,
     RPC_HTTP_URL,
     REALTIME_ENABLED,

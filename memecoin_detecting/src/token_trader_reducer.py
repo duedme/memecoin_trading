@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 import psycopg2
 import psycopg2.extras
 
-from sharedconfig import (
+from shared_config import (
     DBCONFIG,
     REALTIME_ENABLED,
     REDUCER_BATCH_SIZE,

@@ -22,7 +22,7 @@ import threading
 import base58
 import requests
 
-from sharedconfig import RPC_HTTP_URL, getlogger
+from shared_config import RPC_HTTP_URL, getlogger
 
 log = getlogger("pumpfun-curve")
 

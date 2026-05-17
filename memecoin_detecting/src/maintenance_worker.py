@@ -9,7 +9,7 @@ import json
 
 import psycopg2
 
-from sharedconfig import DBCONFIG, REALTIME_ENABLED, getlogger
+from shared_config import DBCONFIG, REALTIME_ENABLED, getlogger
 
 log = getlogger("maintenance-worker")
 PROCESS_NAME = "maintenance-worker"

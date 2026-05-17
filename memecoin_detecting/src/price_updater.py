@@ -11,7 +11,7 @@ import signal
 import psycopg2
 import psycopg2.extras
 
-from sharedconfig import DBCONFIG, REALTIME_ENABLED, getlogger
+from shared_config import DBCONFIG, REALTIME_ENABLED, getlogger
 from parsers.pumpfun_curve import get_price_sol
 
 log = getlogger("price-updater")
