@@ -1,3 +1,4 @@
+import base58
 import grpc
 import geyser_pb2
 import geyser_pb2_grpc
