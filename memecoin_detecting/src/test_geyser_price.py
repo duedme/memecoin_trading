@@ -41,7 +41,7 @@ def stream_pumpfun_curves():
             # 3. Si el mensaje es una actualización de cuenta
             if response.HasField("account"):
                 acc_info = response.account.account
-                pubkey = base58.b58encode(response.account.pubkey).decode('utf-8')
+                pubkey = base58.b58encode(acc_info.pubkey).decode('utf-8')
                 
                 # acc_info.data ya viene en bytes crudos, no hay que decodificar base64
                 price = decode_curve_and_get_price(acc_info.data)
