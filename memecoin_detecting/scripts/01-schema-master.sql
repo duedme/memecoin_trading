@@ -9,7 +9,7 @@ CREATE EXTENSION IF NOT EXISTS timescaledb;
 -- ============================================================
 CREATE TABLE IF NOT EXISTS tokens (
     id              BIGSERIAL PRIMARY KEY,
-    mint_address    TEXT UNIQUE NOT NULL,
+    mintaddress    TEXT UNIQUE NOT NULL,
     symbol          TEXT,
     name            TEXT,
     decimals        INT DEFAULT 9,
@@ -27,7 +27,7 @@ CREATE INDEX IF NOT EXISTS idx_tokens_detected  ON tokens(detected_at DESC);
 -- ============================================================
 CREATE TABLE IF NOT EXISTS token_metrics (
     time            TIMESTAMPTZ NOT NULL,
-    mint_address    TEXT NOT NULL,
+    mintaddress    TEXT NOT NULL,
     price_usd       DOUBLE PRECISION,
     price_sol       DOUBLE PRECISION,
     liquidity_sol   DOUBLE PRECISION,
@@ -45,14 +45,14 @@ CREATE TABLE IF NOT EXISTS token_metrics (
 );
 SELECT create_hypertable('token_metrics', 'time', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS idx_metrics_mint_time
-    ON token_metrics(mint_address, time DESC);
+    ON token_metrics(mintaddress, time DESC);
 
 -- ============================================================
 -- WALLETS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS wallets (
     id              BIGSERIAL PRIMARY KEY,
-    wallet_address  TEXT UNIQUE NOT NULL,
+    walletaddress  TEXT UNIQUE NOT NULL,
     first_seen      TIMESTAMPTZ DEFAULT NOW(),
     last_seen       TIMESTAMPTZ DEFAULT NOW(),
     tags            TEXT
@@ -64,7 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_wallets_last_seen ON wallets(last_seen DESC);
 -- ============================================================
 CREATE TABLE IF NOT EXISTS tracked_wallets (
     wallet_id       BIGINT PRIMARY KEY REFERENCES wallets(id) ON DELETE CASCADE,
-    wallet_address  TEXT UNIQUE NOT NULL,
+    walletaddress  TEXT UNIQUE NOT NULL,
     last_signature  TEXT,
     last_checked    TIMESTAMPTZ DEFAULT NOW(),
     is_enabled      BOOLEAN DEFAULT TRUE,
@@ -79,38 +79,38 @@ CREATE INDEX IF NOT EXISTS idx_tracked_enabled
 CREATE TABLE IF NOT EXISTS wallet_transactions (
     time            TIMESTAMPTZ NOT NULL,
     signature       TEXT NOT NULL,
-    wallet_address  TEXT NOT NULL,
-    mint_address    TEXT NOT NULL,
+    walletaddress  TEXT NOT NULL,
+    mintaddress    TEXT NOT NULL,
     side            TEXT NOT NULL,        -- buy | sell
     amount_token    DOUBLE PRECISION,
     amount_sol      DOUBLE PRECISION,
     price_sol       DOUBLE PRECISION,
-    PRIMARY KEY (time, signature, wallet_address, mint_address)
+    PRIMARY KEY (time, signature, walletaddress, mintaddress)
 );
 SELECT create_hypertable('wallet_transactions', 'time', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS idx_wtx_wallet_time
-    ON wallet_transactions(wallet_address, time DESC);
+    ON wallet_transactions(walletaddress, time DESC);
 CREATE INDEX IF NOT EXISTS idx_wtx_mint_time
-    ON wallet_transactions(mint_address, time DESC);
+    ON wallet_transactions(mintaddress, time DESC);
 
 -- ============================================================
 -- WALLET POSITIONS (estado actual)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS wallet_positions (
-    wallet_address  TEXT NOT NULL,
-    mint_address    TEXT NOT NULL,
+    walletaddress  TEXT NOT NULL,
+    mintaddress    TEXT NOT NULL,
     amount_token    DOUBLE PRECISION DEFAULT 0,
     invested_sol    DOUBLE PRECISION DEFAULT 0,
     realized_sol    DOUBLE PRECISION DEFAULT 0,
     last_update     TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (wallet_address, mint_address)
+    PRIMARY KEY (walletaddress, mintaddress)
 );
 
 -- ============================================================
 -- WALLET CLASSIFICATIONS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS wallet_classifications (
-    wallet_address   TEXT PRIMARY KEY,
+    walletaddress   TEXT PRIMARY KEY,
     behavior         TEXT,          -- human | bot | suspicious
     investor_type    TEXT,          -- elite | profitable | regular | bot-profitable | bot-regular | losing | casual | unclassified
     investor_score   INT DEFAULT 0,
