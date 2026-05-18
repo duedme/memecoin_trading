@@ -12,7 +12,6 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # ¡Ahora solo montaremos UN archivo SQL maestro!
       - ./memecoin_detecting/scripts/01-schema-master.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
@@ -35,7 +34,7 @@ services:
       db:
         condition: service_healthy
 
-  # ===== NUEVO: Ingesta de Transacciones (Geyser) =====
+  # ===== Ingesta de Transacciones (Geyser) =====
   geyser-tx-worker:
     build:
       context: ./memecoin_detecting
@@ -47,7 +46,7 @@ services:
       db: { condition: service_healthy }
     command: ["python3", "geyser_tx_worker.py"]
 
-  # ===== NUEVO: Actualizador de Precios (Geyser) =====
+  # ===== Actualizador de Precios (Geyser) =====
   geyser-price-updater:
     build:
       context: ./memecoin_detecting
