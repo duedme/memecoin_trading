@@ -67,89 +67,76 @@ def process_transaction(conn, tx_update):
         meta = tx_data.meta
         slot = tx_update.slot
         
-        # 1. Extraer firma correcta (Yellowstone la pone en tx_data)
+        # 1. Extraer firma correcta
         raw_sig = getattr(tx_data, 'signature', getattr(tx, 'signature', None))
         if not raw_sig: return
         signature = base58.b58encode(raw_sig).decode('utf-8')
 
-        # 2. Recopilar TODAS las llaves (Estáticas + Dinámicas de Bots/Routers)
+        # 2. Recopilar TODAS las llaves (Estáticas + Dinámicas)
         account_keys = []
-        
-        # A. Llaves estáticas tradicionales
         if hasattr(tx.message, 'account_keys'):
             account_keys.extend([base58.b58encode(k).decode('utf-8') for k in tx.message.account_keys])
-        
-        # B. Llaves dinámicas V0 (Address Lookup Tables) -> ¡AQUÍ SE ESCONDEN!
         if meta:
             if hasattr(meta, 'loaded_writable_addresses'):
                 account_keys.extend([base58.b58encode(k).decode('utf-8') for k in meta.loaded_writable_addresses])
             if hasattr(meta, 'loaded_readonly_addresses'):
                 account_keys.extend([base58.b58encode(k).decode('utf-8') for k in meta.loaded_readonly_addresses])
 
-        # (Diagnóstico: Imprimimos una de cada mil para confirmar el formato)
-        import random
-        if random.randint(1, 1000) == 1:
-            log.info(f"🔎 SNIFFER: TX {signature[:8]} tiene {len(account_keys)} llaves sumadas.")
-
-        # 3. Filtro Pump.fun (Ahora busca en todas partes)
+        # 3. Filtro Pump.fun 
         if "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" not in account_keys:
             return
 
-        log.info(f"👀 1. TX Pump.fun detectada: {signature[:10]}...")
-
-        # 4. Validar estado en blockchain
-        if getattr(meta, 'err', None): 
-            return
-            
-        trader = account_keys[0]
-
-        # 5. Buscar diferencias en balances
-        pre_tokens = {}
-        post_tokens = {}
-        
-        for tb in getattr(meta, 'pre_token_balances', []):
-            if tb.mint and tb.owner and tb.mint != WSOL_MINT:
-                try: pre_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
-                except: pass
-
-        for tb in getattr(meta, 'post_token_balances', []):
-            if tb.mint and tb.owner and tb.mint != WSOL_MINT:
-                try: post_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
-                except: pass
-        
-        best_mint = None
-        best_delta = 0.0
-        actual_trader = trader
-        
-        for key in set(pre_tokens.keys()).union(set(post_tokens.keys())):
-            mint, owner = key
-            delta = post_tokens.get(key, 0.0) - pre_tokens.get(key, 0.0)
-            if abs(delta) > abs(best_delta):
-                best_delta = delta
-                best_mint = mint
-                actual_trader = owner 
-                
-        if not best_mint or best_delta == 0.0:
-            return 
-
-        # 6. Calcular delta de SOL
-        amount_sol = 0.0
+        # ==========================================================
+        # 🔥 ZONA PUMP.FUN: Aquí encendemos las alarmas para ver qué pasa
+        # ==========================================================
         try:
+            if getattr(meta, 'err', None): 
+                log.info(f"⏭️ {signature[:8]}: Descartada - Transacción fallida en Solana")
+                return
+                
+            trader = account_keys[0]
+
+            pre_tokens = {}
+            post_tokens = {}
+            
+            for tb in getattr(meta, 'pre_token_balances', []):
+                if tb.mint and tb.owner and tb.mint != WSOL_MINT:
+                    try: pre_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
+                    except: pass
+
+            for tb in getattr(meta, 'post_token_balances', []):
+                if tb.mint and tb.owner and tb.mint != WSOL_MINT:
+                    try: post_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
+                    except: pass
+            
+            best_mint = None
+            best_delta = 0.0
+            actual_trader = trader
+            
+            for key in set(pre_tokens.keys()).union(set(post_tokens.keys())):
+                mint, owner = key
+                delta = post_tokens.get(key, 0.0) - pre_tokens.get(key, 0.0)
+                if abs(delta) > abs(best_delta):
+                    best_delta = delta
+                    best_mint = mint
+                    actual_trader = owner 
+                    
+            if not best_mint or best_delta == 0.0:
+                log.info(f"⏭️ {signature[:8]}: Descartada - Delta 0 (No movió memecoins o solo fue creación)")
+                return 
+
+            amount_sol = 0.0
             if actual_trader in account_keys:
                 trader_idx = account_keys.index(actual_trader)
                 if len(meta.post_balances) > trader_idx and len(meta.pre_balances) > trader_idx:
                     sol_delta_lamports = meta.post_balances[trader_idx] - meta.pre_balances[trader_idx]
                     amount_sol = abs(sol_delta_lamports) / LAMPORTS_PER_SOL
-        except Exception:
-            amount_sol = 0.0
+                
+            amount_token = abs(best_delta)
+            side = "buy" if best_delta > 0 else "sell"
+            price_sol = (amount_sol / amount_token) if amount_token > 0 else 0.0
+            ts = datetime.now(timezone.utc)
             
-        # 7. Formatear y Guardar
-        amount_token = abs(best_delta)
-        side = "buy" if best_delta > 0 else "sell"
-        price_sol = (amount_sol / amount_token) if amount_token > 0 else 0.0
-        ts = datetime.now(timezone.utc)
-        
-        try:
             with conn.cursor() as cur:
                 cur.execute(UPSERT_WALLET, (actual_trader,))
                 cur.execute(INSERT_TX, (ts, signature, actual_trader, best_mint, side, amount_token, amount_sol, price_sol, slot, "pumpfun", "geyser"))
@@ -161,11 +148,13 @@ def process_transaction(conn, tx_update):
                 
             conn.commit()
             log.info(f"✅ Trade Pump.fun guardado: {side.upper()} {amount_token:.0f} {best_mint[:4]}... por {amount_sol:.4f} SOL")
-        except Exception as db_err:
-            conn.rollback()
+
+        except Exception as e:
+            log.error(f"❌ Error en lógica Pump.fun: {e}")
 
     except Exception:
-        pass # Silenciador encendido para mantener la velocidad
+        # Silenciador maestro para el 99% de las transacciones basura de Solana
+        pass
 
 def run_stream():
     log.info("Iniciando geyser-tx-worker en MODO NUCLEAR DEFINITIVO...")
