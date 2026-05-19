@@ -177,28 +177,29 @@ def run_stream():
 
             request = geyser_pb2.SubscribeRequest()
             
-            request.commitment = 1 # 1 = Confirmed (Rapidísimo pero seguro)
-
-            # 1. El Latido (Monitor)
+            # 1. El Latido (Monitor de Slots)
             request.slots["monitor"].CopyFrom(geyser_pb2.SubscribeRequestFilterSlots())
             
-            # 2. Transacciones (Pump.fun)
+            # 2. Transacciones (Sintaxis Oficial de Yellowstone Python)
             filter_tx = geyser_pb2.SubscribeRequestFilterTransactions()
-            filter_tx.account_include.append("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+            # ¡EL SECRETO: usar .extend() con una lista!
+            filter_tx.account_include.extend(["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"])
             
             request.transactions["pump_fun_stream"].CopyFrom(filter_tx)
             
-            log.info("📡 Suscrito a Slots y Transacciones Pump.fun (Nivel Confirmed)...")
+            log.info("📡 Suscrito a Pump.fun (Método Protobuf estricto)...")
             
+            # Ejecutar la suscripción
             responses = stub.Subscribe(iter([request]))
             
             for response in responses:
                 if STOP: break
                 
                 if response.HasField("transaction"):
+                    # Si llega una transacción, la mandamos al procesador
                     process_transaction(conn, response.transaction)
                 elif response.HasField("slot"):
-                    # Latido cada 50 slots
+                    # Imprimir latido de vez en cuando para confirmar conexión
                     if response.slot.slot % 50 == 0:
                         log.info(f"💓 Latido de Solana - Slot: {response.slot.slot}")
 
