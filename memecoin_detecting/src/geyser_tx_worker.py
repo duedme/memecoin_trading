@@ -177,20 +177,18 @@ def run_stream():
 
             request = geyser_pb2.SubscribeRequest()
             
-            # 1. El Latido (Dejamos el monitor activo para confirmar conexión)
+            request.commitment = 1 # 1 = Confirmed (Rapidísimo pero seguro)
+
+            # 1. El Latido (Monitor)
             request.slots["monitor"].CopyFrom(geyser_pb2.SubscribeRequestFilterSlots())
             
-            # 2. Transacciones (Sintaxis estricta de Protobuf)
+            # 2. Transacciones (Pump.fun)
             filter_tx = geyser_pb2.SubscribeRequestFilterTransactions()
-            # Programa oficial de Pump.fun
             filter_tx.account_include.append("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-            # Queremos solo transacciones que no hayan fallado
-            filter_tx.failed = False 
             
-            # Inyectamos el filtro en la petición
             request.transactions["pump_fun_stream"].CopyFrom(filter_tx)
             
-            log.info("📡 Suscrito a Slots y Transacciones Pump.fun (Filtro Corregido)...")
+            log.info("📡 Suscrito a Slots y Transacciones Pump.fun (Nivel Confirmed)...")
             
             responses = stub.Subscribe(iter([request]))
             
@@ -200,7 +198,7 @@ def run_stream():
                 if response.HasField("transaction"):
                     process_transaction(conn, response.transaction)
                 elif response.HasField("slot"):
-                    # Imprimimos un latido ligero cada ~50 slots para no saturar la pantalla
+                    # Latido cada 50 slots
                     if response.slot.slot % 50 == 0:
                         log.info(f"💓 Latido de Solana - Slot: {response.slot.slot}")
 
