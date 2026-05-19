@@ -87,11 +87,18 @@ def process_transaction(conn, tx_update):
             return
 
         # ==========================================================
-        # 🔥 ZONA PUMP.FUN: Aquí encendemos las alarmas para ver qué pasa
+        # 🔥 ZONA PUMP.FUN: Corregida para la Trampa Protobuf
         # ==========================================================
         try:
-            if getattr(meta, 'err', None): 
-                log.info(f"⏭️ {signature[:8]}: Descartada - Transacción fallida en Solana")
+            # Validación correcta de error en gRPC / Protobuf
+            has_error = False
+            try:
+                if meta.HasField("err"): has_error = True
+            except:
+                if bool(str(getattr(meta, 'err', '')).strip()): has_error = True
+                
+            if has_error:
+                # Callamos el print porque los bots fallan el 70% de las veces y harían spam
                 return
                 
             trader = account_keys[0]
@@ -122,7 +129,7 @@ def process_transaction(conn, tx_update):
                     actual_trader = owner 
                     
             if not best_mint or best_delta == 0.0:
-                log.info(f"⏭️ {signature[:8]}: Descartada - Delta 0 (No movió memecoins o solo fue creación)")
+                # También callamos el delta 0 (Bots creando tokens sin liquidez)
                 return 
 
             amount_sol = 0.0
@@ -153,7 +160,6 @@ def process_transaction(conn, tx_update):
             log.error(f"❌ Error en lógica Pump.fun: {e}")
 
     except Exception:
-        # Silenciador maestro para el 99% de las transacciones basura de Solana
         pass
 
 def run_stream():
