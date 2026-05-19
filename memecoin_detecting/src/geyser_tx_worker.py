@@ -175,23 +175,37 @@ def run_stream():
             channel = grpc.insecure_channel('host.docker.internal:10000')
             stub = geyser_pb2_grpc.GeyserStub(channel)
 
+            # --- SUSCRIPCIÓN MODO "RED GIGANTE" ---
             request = geyser_pb2.SubscribeRequest()
-            request.transactions["pumpfun_memecoins"].account_include.append("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-            request.commitment = 1 # Confirmed
+            
+            # Filtro: Cualquier transacción que involucre el programa de Pump.fun
+            # No filtramos por logs, queremos ver TODO para debuguear
+            request.transactions["pump_all"].account_include.append("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+            
+            # Queremos transacciones confirmadas rápido (commitment 1 = processed/confirmed)
+            request.commitment = 1 
 
-            log.info("📡 Conectado al stream de transacciones gRPC (Pump.fun)...")
+            log.info("📡 Suscrito a TODO el tráfico de Pump.fun en gRPC...")
             
             responses = stub.Subscribe(iter([request]))
+            
             for response in responses:
                 if STOP: break
+                
+                # --- LOG DE VERIFICACIÓN DE PAQUETES ---
+                # Esto nos dirá si Geyser está mandando CUALQUIER COSA
                 if response.HasField("transaction"):
                     process_transaction(conn, response.transaction)
-                    
-        except grpc.RpcError as e:
-            log.warning(f"Desconectado del nodo: {e}. Reconectando en 3s...")
-            time.sleep(3)
+                elif response.HasField("ping"):
+                    # Solo para saber que el latido del nodo está vivo
+                    pass 
+                else:
+                    # Si llega otro tipo de mensaje (slot, block, etc)
+                    # log.info("📦 Recibido paquete de otro tipo...")
+                    pass
+
         except Exception as e:
-            log.error(f"Error fatal: {e}")
+            log.error(f"Error en el stream: {e}")
             time.sleep(3)
         finally:
             if conn: conn.close()
