@@ -60,38 +60,50 @@ def db_connect():
     return conn
 
 def process_transaction(conn, tx_update):
-    """Extrae la información, filtra en memoria y guarda en DB con Rayos X"""
+    """Extrae la info, busca en ALTs (V0 Txs) y guarda en DB"""
     try:
         tx_data = tx_update.transaction
         tx = tx_data.transaction
         meta = tx_data.meta
         slot = tx_update.slot
         
-        # 1. Extraer firma
-        raw_sig = getattr(tx, 'signature', getattr(tx, 'sig', None))
+        # 1. Extraer firma correcta (Yellowstone la pone en tx_data)
+        raw_sig = getattr(tx_data, 'signature', getattr(tx, 'signature', None))
         if not raw_sig: return
         signature = base58.b58encode(raw_sig).decode('utf-8')
 
-        # 2. Extraer cuentas involucradas
-        msg = tx.message
-        raw_keys = getattr(msg, 'account_keys', getattr(msg, 'static_account_keys', []))
-        account_keys = [base58.b58encode(k).decode('utf-8') for k in raw_keys]
+        # 2. Recopilar TODAS las llaves (Estáticas + Dinámicas de Bots/Routers)
+        account_keys = []
         
-        # Si NO es Pump.fun, la descartamos silenciosamente
+        # A. Llaves estáticas tradicionales
+        if hasattr(tx.message, 'account_keys'):
+            account_keys.extend([base58.b58encode(k).decode('utf-8') for k in tx.message.account_keys])
+        
+        # B. Llaves dinámicas V0 (Address Lookup Tables) -> ¡AQUÍ SE ESCONDEN!
+        if meta:
+            if hasattr(meta, 'loaded_writable_addresses'):
+                account_keys.extend([base58.b58encode(k).decode('utf-8') for k in meta.loaded_writable_addresses])
+            if hasattr(meta, 'loaded_readonly_addresses'):
+                account_keys.extend([base58.b58encode(k).decode('utf-8') for k in meta.loaded_readonly_addresses])
+
+        # (Diagnóstico: Imprimimos una de cada mil para confirmar el formato)
+        import random
+        if random.randint(1, 1000) == 1:
+            log.info(f"🔎 SNIFFER: TX {signature[:8]} tiene {len(account_keys)} llaves sumadas.")
+
+        # 3. Filtro Pump.fun (Ahora busca en todas partes)
         if "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" not in account_keys:
             return
 
-        # --- A PARTIR DE AQUÍ, ES PUMP.FUN ---
         log.info(f"👀 1. TX Pump.fun detectada: {signature[:10]}...")
 
-        # 3. Validar estado en blockchain
+        # 4. Validar estado en blockchain
         if getattr(meta, 'err', None): 
-            log.info(f"⏭️ 2. Saltando {signature[:10]}: TX fallida (Error en Solana)")
             return
             
         trader = account_keys[0]
 
-        # 4. Buscar diferencias en balances
+        # 5. Buscar diferencias en balances
         pre_tokens = {}
         post_tokens = {}
         
@@ -118,10 +130,9 @@ def process_transaction(conn, tx_update):
                 actual_trader = owner 
                 
         if not best_mint or best_delta == 0.0:
-            log.info(f"⏭️ 3. Saltando {signature[:10]}: No hubo transferencia real de tokens (Delta 0)")
             return 
 
-        # 5. Calcular delta de SOL
+        # 6. Calcular delta de SOL
         amount_sol = 0.0
         try:
             if actual_trader in account_keys:
@@ -129,11 +140,10 @@ def process_transaction(conn, tx_update):
                 if len(meta.post_balances) > trader_idx and len(meta.pre_balances) > trader_idx:
                     sol_delta_lamports = meta.post_balances[trader_idx] - meta.pre_balances[trader_idx]
                     amount_sol = abs(sol_delta_lamports) / LAMPORTS_PER_SOL
-        except Exception as e:
-            log.warning(f"⚠️ Error calculando SOL en {signature[:10]}: {e}")
+        except Exception:
             amount_sol = 0.0
             
-        # 6. Formatear y Guardar
+        # 7. Formatear y Guardar
         amount_token = abs(best_delta)
         side = "buy" if best_delta > 0 else "sell"
         price_sol = (amount_sol / amount_token) if amount_token > 0 else 0.0
@@ -150,14 +160,12 @@ def process_transaction(conn, tx_update):
                 cur.execute(ENQUEUE_REDUCER, ("classification_update", actual_trader, None, signature, 3))
                 
             conn.commit()
-            log.info(f"✅ 4. Trade Pump.fun guardado: {side.upper()} {amount_token:.0f} {best_mint[:4]}... por {amount_sol:.4f} SOL")
+            log.info(f"✅ Trade Pump.fun guardado: {side.upper()} {amount_token:.0f} {best_mint[:4]}... por {amount_sol:.4f} SOL")
         except Exception as db_err:
             conn.rollback()
-            log.error(f"❌ 5. Error en la Base de Datos: {db_err}")
 
-    except Exception as general_err:
-        # ¡AQUÍ ESTABA EL SILENCIADOR! Ahora gritará el error
-        log.error(f"❌ Error crítico en Python analizando TX: {general_err}")
+    except Exception:
+        pass # Silenciador encendido para mantener la velocidad
 
 def run_stream():
     log.info("Iniciando geyser-tx-worker en MODO NUCLEAR DEFINITIVO...")
