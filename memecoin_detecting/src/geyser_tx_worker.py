@@ -166,7 +166,7 @@ def process_transaction(conn, tx_update):
         log.error(f"❌ Error crítico de análisis estructural: {general_err}")
 
 def run_stream():
-    log.info("Iniciando geyser-tx-worker...")
+    log.info("Iniciando geyser-tx-worker en MODO NUCLEAR...")
     
     while not STOP:
         conn = None
@@ -177,30 +177,29 @@ def run_stream():
 
             request = geyser_pb2.SubscribeRequest()
             
-            # 1. El Latido (Monitor de Slots)
+            # 1. El Latido
             request.slots["monitor"].CopyFrom(geyser_pb2.SubscribeRequestFilterSlots())
             
-            # 2. Transacciones (Sintaxis Oficial de Yellowstone Python)
+            # 2. ☢️ MODO NUCLEAR: Sin filtros. TODA la red Solana.
             filter_tx = geyser_pb2.SubscribeRequestFilterTransactions()
-            # ¡EL SECRETO: usar .extend() con una lista!
-            filter_tx.account_include.extend(["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"])
+            request.transactions["nuclear_stream"].CopyFrom(filter_tx)
             
-            request.transactions["pump_fun_stream"].CopyFrom(filter_tx)
+            log.info("📡 Suscrito a TODA LA RED SOLANA (Prueba de estrés)...")
             
-            log.info("📡 Suscrito a Pump.fun (Método Protobuf estricto)...")
-            
-            # Ejecutar la suscripción
             responses = stub.Subscribe(iter([request]))
             
             for response in responses:
                 if STOP: break
                 
                 if response.HasField("transaction"):
-                    # Si llega una transacción, la mandamos al procesador
-                    process_transaction(conn, response.transaction)
+                    # Si llega algo, lo imprimimos gritando
+                    raw_sig = getattr(response.transaction.transaction, 'signature', getattr(response.transaction.transaction, 'sig', b''))
+                    tx_sig = base58.b58encode(raw_sig).decode('utf-8')
+                    log.info(f"💥 BINGO! TX Recibida: {tx_sig[:15]}...")
+                    
                 elif response.HasField("slot"):
-                    # Imprimir latido de vez en cuando para confirmar conexión
-                    if response.slot.slot % 50 == 0:
+                    # Latido cada 10 slots
+                    if response.slot.slot % 10 == 0:
                         log.info(f"💓 Latido de Solana - Slot: {response.slot.slot}")
 
         except Exception as e:
