@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Screener Live Feed</title>
+    <style>
+        body { background-color: #0d1117; color: #c9d1d9; font-family: 'Courier New', monospace; padding: 20px; margin: 0; }
+        h1 { color: #58a6ff; text-align: center; margin-bottom: 5px; }
+        .subtitle { text-align: center; color: #8b949e; margin-bottom: 20px; font-size: 14px; }
+        .container { display: flex; gap: 20px; height: 80vh; }
+        .panel { flex: 1; background: #000; border: 1px solid #30363d; border-radius: 8px; display: flex; flex-direction: column; }
+        .panel-header { padding: 10px; font-weight: bold; text-align: center; border-bottom: 1px solid #30363d; }
+        .header-general { color: #3fb950; }
+        .header-smart { color: #ff7b72; background: #211111; }
+        .console { padding: 15px; overflow-y: auto; flex-grow: 1; scroll-behavior: smooth; }
+        .log-line { margin: 4px 0; border-bottom: 1px dashed #222; font-size: 13px; }
+        .smart-line { color: #ffa657; font-weight: bold; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+</head>
+<body>
+    <h1>⚡ Solana Radar</h1>
+    <div class="subtitle">Conexión Yellowstone Geyser de Latencia Cero</div>
+
+    <div class="container">
+        <div class="panel">
+            <div class="panel-header header-general">🌐 Flujo Global (Todas las transacciones)</div>
+            <div id="console-general" class="console"></div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header header-smart">🔥 SMART MONEY (Compras Rentables/Elite)</div>
+            <div id="console-smart" class="console"></div>
+        </div>
+    </div>
+
+    <script>
+        var socket = io();
+        var consGeneral = document.getElementById('console-general');
+        var consSmart = document.getElementById('console-smart');
+
+        function addLog(consoleDiv, text, cssClass) {
+            var p = document.createElement('p');
+            p.className = 'log-line ' + cssClass;
+            p.innerText = text;
+            consoleDiv.appendChild(p);
+            
+            if (consoleDiv.childNodes.length > 50) {
+                consoleDiv.removeChild(consoleDiv.firstChild);
+            }
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        socket.on('new_trade', function(data) {
+            addLog(consGeneral, data.text, '');
+        });
+
+        socket.on('smart_money', function(data) {
+            addLog(consSmart, data.text, 'smart-line');
+        });
+    </script>
+</body>
+</html>

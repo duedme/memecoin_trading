@@ -1,0 +1,71 @@
+import time
+import threading
+import psycopg2
+from flask import Flask, render_template
+from flask_socketio import SocketIO
+from shared_config import DB_CONFIG
+
+app = Flask(__name__)
+socketio = SocketIO(app, async_mode='threading', cors_allowed_origins="*")
+
+def listen_to_db():
+    conn = psycopg2.connect(**DB_CONFIG)
+    last_time_all = None
+    last_time_smart = None
+    
+    while True:
+        try:
+            with conn.cursor() as cur:
+                # 1. FLUJO GENERAL (Todas las transacciones)
+                if last_time_all is None:
+                    cur.execute("SELECT time, signature, side, amountsol, mintaddress FROM wallettransactions ORDER BY time DESC LIMIT 1")
+                else:
+                    cur.execute("SELECT time, signature, side, amountsol, mintaddress FROM wallettransactions WHERE time > %s ORDER BY time ASC", (last_time_all,))
+                
+                for row in cur.fetchall():
+                    tx_time, sig, side, sol, mint = row
+                    last_time_all = tx_time
+                    color = "🟢 COMPRA" if side == 'buy' else "🔴 VENTA"
+                    msg = f"[{tx_time.strftime('%H:%M:%S.%f')[:-3]}] {color} - {sol:.2f} SOL - Token: {mint[:8]}..."
+                    socketio.emit('new_trade', {'text': msg})
+
+                # 2. FLUJO SMART MONEY (Solo compras de inversores rentables/elite)
+                if last_time_smart is None:
+                    cur.execute("""
+                        SELECT t.time, t.signature, t.amountsol, t.mintaddress, c.investortype 
+                        FROM wallettransactions t
+                        JOIN walletclassifications c ON t.walletaddress = c.walletaddress
+                        WHERE c.investortype IN ('elite', 'profitable') AND t.side = 'buy'
+                        ORDER BY t.time DESC LIMIT 1
+                    """)
+                else:
+                    cur.execute("""
+                        SELECT t.time, t.signature, t.amountsol, t.mintaddress, c.investortype 
+                        FROM wallettransactions t
+                        JOIN walletclassifications c ON t.walletaddress = c.walletaddress
+                        WHERE c.investortype IN ('elite', 'profitable') AND t.side = 'buy'
+                          AND t.time > %s
+                        ORDER BY t.time ASC
+                    """, (last_time_smart,))
+
+                for row in cur.fetchall():
+                    tx_time, sig, sol, mint, inv_type = row
+                    last_time_smart = tx_time
+                    tag = "👑 ELITE" if inv_type == 'elite' else "📈 RENTABLE"
+                    msg = f"[{tx_time.strftime('%H:%M:%S')}] 🔥 {tag} COMPRÓ {sol:.2f} SOL del Token {mint[:8]}..."
+                    socketio.emit('smart_money', {'text': msg})
+                    
+        except Exception as e:
+            print(f"Error BD: {e}")
+            conn.rollback()
+            
+        time.sleep(0.5)
+
+@app.route('/admin/live-feed')
+def index():
+    return render_template('terminal.html')
+
+if __name__ == '__main__':
+    print("🚀 Servidor WebSocket iniciado en el puerto 5001...")
+    threading.Thread(target=listen_to_db, daemon=True).start()
+    socketio.run(app, host='0.0.0.0', port=5001, allow_unsafe_werkzeug=True)
