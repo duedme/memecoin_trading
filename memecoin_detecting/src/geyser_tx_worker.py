@@ -62,40 +62,50 @@ def db_connect():
 def process_transaction(conn, tx_update):
     """Extrae la información de la transacción gRPC con blindaje de errores y guarda en DB"""
     try:
-        tx = tx_update.transaction.transaction
-        meta = tx_update.transaction.meta
+        # Acceso ultra-seguro a los datos crudos
+        tx_data = tx_update.transaction
+        tx = tx_data.transaction
+        meta = tx_data.meta
         slot = tx_update.slot
         
-        # --- LUZ DE RAYOS X 1: Ver si llega ALGO ---
-        signature = base58.b58encode(tx.signature).decode('utf-8')
-        log.info(f"🔍 RECIBIDA TX CRUDA: {signature}")
+        # --- AJUSTE DE FIRMA (El culpable del error) ---
+        # Intentamos obtener la firma de las dos formas posibles en gRPC
+        raw_sig = getattr(tx, 'signature', getattr(tx, 'sig', None))
         
-        # 1. Validar estado de la transacción en la blockchain
+        if not raw_sig:
+            return # Si no hay firma, no podemos procesar
+
+        signature = base58.b58encode(raw_sig).decode('utf-8')
+        
+        # --- LUZ DE RAYOS X ---
+        log.info(f"🔍 RECIBIDA TX CRUDA: {signature[:10]}...")
+
+        # 1. Validar estado (meta ya lo tenemos arriba)
         if not meta or meta.err: 
-            log.info(f"⏭️ Saltando {signature}: Transacción fallida en Solana.")
             return
 
-        # 2. Extraer cuentas involucradas de forma segura
-        try:
-            account_keys = [base58.b58encode(k).decode('utf-8') for k in tx.message.account_keys]
-        except Exception:
-            return
-            
+        # 2. Extraer cuentas involucradas
+        # En algunas versiones es 'tx.message.account_keys', en otras es 'tx.message.static_account_keys'
+        msg = tx.message
+        raw_keys = getattr(msg, 'account_keys', getattr(msg, 'static_account_keys', []))
+        account_keys = [base58.b58encode(k).decode('utf-8') for k in raw_keys]
+        
         if not account_keys: 
             return
             
         trader = account_keys[0]
 
-        # 3. Buscar diferencias en balances de TOKENS (A prueba de fallos de tipo/None y Bots)
+        # 3. Buscar diferencias en balances (A prueba de Bots)
         pre_tokens = {}
         post_tokens = {}
         
-        for tb in meta.pre_token_balances:
+        # Filtramos solo lo que nos importa (Pump.fun)
+        for tb in getattr(meta, 'pre_token_balances', []):
             if tb.mint and tb.owner and tb.mint != WSOL_MINT:
                 try: pre_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
                 except: pass
 
-        for tb in meta.post_token_balances:
+        for tb in getattr(meta, 'post_token_balances', []):
             if tb.mint and tb.owner and tb.mint != WSOL_MINT:
                 try: post_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
                 except: pass
