@@ -20,7 +20,7 @@ from shared_config import (
     REDUCER_WORKERS,
     getlogger,
 )
-from walletclassifier import classify_wallet
+from wallet_classifier import classify_wallet
 
 log = getlogger("classifier-worker")
 

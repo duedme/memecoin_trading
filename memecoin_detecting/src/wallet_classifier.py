@@ -1,5 +1,5 @@
 """
-walletclassifier.py
+wallet_classifier.py
 Clasifica wallets a partir de walletpnlcache, walletpositions y wallettransactions.
 Refactor Fase 7: deja de ser un loop; ahora es una función pura que el
 classifier_worker invoca por wallet, y además provee un modo CLI para corrida batch.
@@ -18,7 +18,7 @@ import psycopg2.extras
 
 from shared_config import DBCONFIG, getlogger
 
-log = getlogger("walletclassifier")
+log = getlogger("wallet_classifier")
 
 # Umbrales (ajustables)
 BOT_MIN_TRADES_PER_HOUR = 20
