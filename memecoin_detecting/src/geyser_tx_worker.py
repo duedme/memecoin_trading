@@ -160,7 +160,7 @@ def process_transaction(conn, tx_update):
         log.error(f"❌ Error crítico en Python analizando TX: {general_err}")
 
 def run_stream():
-    log.info("Iniciando geyser-tx-worker en Modo Fuerza Bruta...")
+    log.info("Iniciando geyser-tx-worker en MODO NUCLEAR DEFINITIVO...")
     
     while not STOP:
         conn = None
@@ -171,10 +171,14 @@ def run_stream():
 
             request = geyser_pb2.SubscribeRequest()
             
-            # Pedimos todo a la red, pero sin votos para no saturar Docker
+            # 1. El Latido (Para asegurar que la conexión no muera)
+            request.slots["monitor"].CopyFrom(geyser_pb2.SubscribeRequestFilterSlots())
+            
+            # 2. MODO NUCLEAR EXACTO (Sin condiciones booleanas que rompan el plugin)
             filter_tx = geyser_pb2.SubscribeRequestFilterTransactions()
-            filter_tx.vote = False 
-            request.transactions["brute_force"].CopyFrom(filter_tx)
+            request.transactions["nuclear_stream"].CopyFrom(filter_tx)
+            
+            log.info("📡 Suscrito a TODA LA RED con Filtro Rayos X interno...")
             
             responses = stub.Subscribe(iter([request]))
             
@@ -182,7 +186,11 @@ def run_stream():
                 if STOP: break
                 
                 if response.HasField("transaction"):
+                    # Enviamos la transacción cruda a los Rayos X
                     process_transaction(conn, response.transaction)
+                elif response.HasField("slot"):
+                    if response.slot.slot % 50 == 0:
+                        log.info(f"💓 Latido de Solana - Slot: {response.slot.slot}")
 
         except Exception as e:
             log.error(f"Error en el stream: {e}")
