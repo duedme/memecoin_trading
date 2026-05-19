@@ -60,77 +60,99 @@ def db_connect():
     return conn
 
 def process_transaction(conn, tx_update):
-    """Extrae la información de la transacción gRPC y la guarda en DB"""
+    """Extrae la información de la transacción gRPC con blindaje de errores y guarda en DB"""
     try:
-        # 1. Información básica
         tx = tx_update.transaction.transaction
         meta = tx_update.transaction.meta
         slot = tx_update.slot
         
-        # Si la transacción falló en la blockchain, la ignoramos
-        if meta.err: 
+        # 1. Validar estado de la transacción en la blockchain
+        if not meta or meta.err: 
             return
 
         signature = base58.b58encode(tx.signature).decode('utf-8')
         
-        # 2. Extraer las llaves (cuentas) involucradas
-        account_keys = [base58.b58encode(k).decode('utf-8') for k in tx.message.account_keys]
+        # 2. Extraer cuentas involucradas de forma segura
+        try:
+            account_keys = [base58.b58encode(k).decode('utf-8') for k in tx.message.account_keys]
+        except Exception:
+            return
+            
         if not account_keys: 
             return
             
-        trader = account_keys[0] # El que firma la transacción es el trader
+        trader = account_keys[0]
 
-        # 3. Buscar diferencias en los balances de TOKENS para el trader
-        pre_tokens = {tb.mint: float(tb.ui_token_amount.ui_amount or 0) 
-                      for tb in meta.pre_token_balances if tb.owner == trader and tb.mint != WSOL_MINT}
-                      
-        post_tokens = {tb.mint: float(tb.ui_token_amount.ui_amount or 0) 
-                       for tb in meta.post_token_balances if tb.owner == trader and tb.mint != WSOL_MINT}
+        # 3. Buscar diferencias en balances de TOKENS (A prueba de fallos de tipo/None y Bots)
+        pre_tokens = {}
+        post_tokens = {}
+        
+        for tb in meta.pre_token_balances:
+            if tb.mint and tb.owner and tb.mint != WSOL_MINT:
+                try:
+                    pre_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
+                except (ValueError, TypeError):
+                    pass
+
+        for tb in meta.post_token_balances:
+            if tb.mint and tb.owner and tb.mint != WSOL_MINT:
+                try:
+                    post_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
+                except (ValueError, TypeError):
+                    pass
         
         best_mint = None
         best_delta = 0.0
+        actual_trader = trader
         
-        # Determinamos qué token fue el que se compró/vendió
-        for mint in set(pre_tokens.keys()).union(set(post_tokens.keys())):
-            delta = post_tokens.get(mint, 0.0) - pre_tokens.get(mint, 0.0)
+        for key in set(pre_tokens.keys()).union(set(post_tokens.keys())):
+            mint, owner = key
+            delta = post_tokens.get(key, 0.0) - pre_tokens.get(key, 0.0)
             if abs(delta) > abs(best_delta):
                 best_delta = delta
                 best_mint = mint
+                actual_trader = owner # El dueño real
                 
-        if not best_mint or best_delta == 0:
-            return # No hubo movimiento de memecoins
+        if not best_mint or best_delta == 0.0:
+            return 
 
-        # 4. Buscar diferencias en el balance de SOL (Cuánto costó)
+        # 4. Calcular delta de SOL gastado de forma segura
+        amount_sol = 0.0
         try:
-            trader_idx = account_keys.index(trader)
-            sol_delta_lamports = meta.post_balances[trader_idx] - meta.pre_balances[trader_idx] + meta.fee
-            amount_sol = abs(sol_delta_lamports) / LAMPORTS_PER_SOL
-        except ValueError:
+            if actual_trader in account_keys:
+                trader_idx = account_keys.index(actual_trader)
+                if len(meta.post_balances) > trader_idx and len(meta.pre_balances) > trader_idx:
+                    sol_delta_lamports = meta.post_balances[trader_idx] - meta.pre_balances[trader_idx]
+                    amount_sol = abs(sol_delta_lamports) / LAMPORTS_PER_SOL
+        except Exception:
             amount_sol = 0.0
             
-        # 5. Formatear los datos finales
+        # 5. Formatear salida final
         amount_token = abs(best_delta)
         side = "buy" if best_delta > 0 else "sell"
         price_sol = (amount_sol / amount_token) if amount_token > 0 else 0.0
         ts = datetime.now(timezone.utc)
         
-        # 6. Insertar en la Base de Datos
-        with conn.cursor() as cur:
-            cur.execute(UPSERT_WALLET, (trader,))
-            cur.execute(INSERT_TX, (ts, signature, trader, best_mint, side, amount_token, amount_sol, price_sol, slot, "pumpfun", "geyser"))
-            
-            # Encolar para que los Reducers calculen el P&L en background
-            cur.execute(ENQUEUE_REDUCER, ("position_update", trader, best_mint, signature, 10))
-            cur.execute(ENQUEUE_REDUCER, ("wallet_pnl_update", trader, None, signature, 8))
-            cur.execute(ENQUEUE_REDUCER, ("token_trader_update", None, best_mint, signature, 8))
-            cur.execute(ENQUEUE_REDUCER, ("classification_update", trader, None, signature, 3))
-            
-        conn.commit()
-        log.info(f"✅ Trade guardado: {side.upper()} {amount_token:.0f} {best_mint[:4]}... por {amount_sol:.4f} SOL")
+        # 6. Inserción protegida en la base de datos (Usando actual_trader)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(UPSERT_WALLET, (actual_trader,))
+                cur.execute(INSERT_TX, (ts, signature, actual_trader, best_mint, side, amount_token, amount_sol, price_sol, slot, "pumpfun", "geyser"))
+                
+                # Inyectar en la cola del pipeline interno (Reducers)
+                cur.execute(ENQUEUE_REDUCER, ("position_update", actual_trader, best_mint, signature, 10))
+                cur.execute(ENQUEUE_REDUCER, ("wallet_pnl_update", actual_trader, None, signature, 8))
+                cur.execute(ENQUEUE_REDUCER, ("token_trader_update", None, best_mint, signature, 8))
+                cur.execute(ENQUEUE_REDUCER, ("classification_update", actual_trader, None, signature, 3))
+                
+            conn.commit()
+            log.info(f"✅ Trade guardado en Postgres: {side.upper()} {amount_token:.0f} {best_mint[:4]}... por {amount_sol:.4f} SOL")
+        except Exception as db_err:
+            conn.rollback()
+            log.error(f"⚠️ Error de inserción SQL (saltando txn {signature[:8]}): {db_err}")
 
-    except Exception as e:
-        conn.rollback()
-        log.error(f"Error procesando tx: {e}")
+    except Exception as general_err:
+        log.error(f"❌ Error crítico de análisis estructural: {general_err}")
 
 def run_stream():
     log.info("Iniciando geyser-tx-worker...")
