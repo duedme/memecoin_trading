@@ -66,12 +66,15 @@ def process_transaction(conn, tx_update):
         meta = tx_update.transaction.meta
         slot = tx_update.slot
         
+        # --- LUZ DE RAYOS X 1: Ver si llega ALGO ---
+        signature = base58.b58encode(tx.signature).decode('utf-8')
+        log.info(f"🔍 RECIBIDA TX CRUDA: {signature}")
+        
         # 1. Validar estado de la transacción en la blockchain
         if not meta or meta.err: 
+            log.info(f"⏭️ Saltando {signature}: Transacción fallida en Solana.")
             return
 
-        signature = base58.b58encode(tx.signature).decode('utf-8')
-        
         # 2. Extraer cuentas involucradas de forma segura
         try:
             account_keys = [base58.b58encode(k).decode('utf-8') for k in tx.message.account_keys]
@@ -89,17 +92,13 @@ def process_transaction(conn, tx_update):
         
         for tb in meta.pre_token_balances:
             if tb.mint and tb.owner and tb.mint != WSOL_MINT:
-                try:
-                    pre_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
-                except (ValueError, TypeError):
-                    pass
+                try: pre_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
+                except: pass
 
         for tb in meta.post_token_balances:
             if tb.mint and tb.owner and tb.mint != WSOL_MINT:
-                try:
-                    post_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
-                except (ValueError, TypeError):
-                    pass
+                try: post_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
+                except: pass
         
         best_mint = None
         best_delta = 0.0
@@ -111,9 +110,11 @@ def process_transaction(conn, tx_update):
             if abs(delta) > abs(best_delta):
                 best_delta = delta
                 best_mint = mint
-                actual_trader = owner # El dueño real
+                actual_trader = owner 
                 
         if not best_mint or best_delta == 0.0:
+            # --- LUZ DE RAYOS X 2: Ver por qué se descarta ---
+            log.info(f"⏭️ Saltando {signature}: No es un swap de tokens (Delta 0).")
             return 
 
         # 4. Calcular delta de SOL gastado de forma segura
