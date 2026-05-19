@@ -29,10 +29,10 @@ def listen_to_db():
                     msg = f"[{tx_time.strftime('%H:%M:%S.%f')[:-3]}] {color} - {sol:.2f} SOL - Token: {mint[:8]}..."
                     socketio.emit('new_trade', {'text': msg})
 
-                # 2. FLUJO SMART MONEY (Solo compras de inversores rentables/elite)
+                # 2. FLUJO SMART MONEY (Con Wallet Address)
                 if last_time_smart is None:
                     cur.execute("""
-                        SELECT t.time, t.signature, t.amountsol, t.mintaddress, c.investortype 
+                        SELECT t.time, t.signature, t.amountsol, t.mintaddress, c.investortype, t.walletaddress 
                         FROM wallettransactions t
                         JOIN walletclassifications c ON t.walletaddress = c.walletaddress
                         WHERE c.investortype IN ('elite', 'profitable') AND t.side = 'buy'
@@ -40,7 +40,7 @@ def listen_to_db():
                     """)
                 else:
                     cur.execute("""
-                        SELECT t.time, t.signature, t.amountsol, t.mintaddress, c.investortype 
+                        SELECT t.time, t.signature, t.amountsol, t.mintaddress, c.investortype, t.walletaddress 
                         FROM wallettransactions t
                         JOIN walletclassifications c ON t.walletaddress = c.walletaddress
                         WHERE c.investortype IN ('elite', 'profitable') AND t.side = 'buy'
@@ -49,10 +49,14 @@ def listen_to_db():
                     """, (last_time_smart,))
 
                 for row in cur.fetchall():
-                    tx_time, sig, sol, mint, inv_type = row
+                    tx_time, sig, sol, mint, inv_type, wallet = row
                     last_time_smart = tx_time
                     tag = "👑 ELITE" if inv_type == 'elite' else "📈 RENTABLE"
-                    msg = f"[{tx_time.strftime('%H:%M:%S')}] 🔥 {tag} COMPRÓ {sol:.2f} SOL del Token {mint[:8]}..."
+                    
+                    # Formatear la wallet para que sea corta
+                    short_wallet = f"{wallet[:4]}...{wallet[-4:]}" if wallet and len(wallet) > 8 else "Unknown"
+                    
+                    msg = f"[{tx_time.strftime('%H:%M:%S')}] 🔥 {tag} ({short_wallet}) COMPRÓ {sol:.2f} SOL del Token {mint[:8]}..."
                     socketio.emit('smart_money', {'text': msg})
                     
         except Exception as e:
