@@ -43,6 +43,8 @@ services:
     env_file: [./memecoin_detecting/.env]
     environment:
       - DB_HOST=db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./memecoin_detecting/src:/app
     depends_on:
@@ -58,6 +60,8 @@ services:
     env_file: [./memecoin_detecting/.env]
     environment:
       - DB_HOST=db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./memecoin_detecting/src:/app
     depends_on:

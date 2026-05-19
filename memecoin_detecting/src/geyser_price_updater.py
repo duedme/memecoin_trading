@@ -101,7 +101,7 @@ def run_stream():
             pda_to_mint = load_pda_to_mint_map(conn)
             last_map_refresh = time.time()
             
-            channel = grpc.insecure_channel('45.154.33.43:10000')
+            channel = grpc.insecure_channel('host.docker.internal:10000')
             stub = geyser_pb2_grpc.GeyserStub(channel)
 
             request = geyser_pb2.SubscribeRequest()
