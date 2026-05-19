@@ -60,46 +60,37 @@ def db_connect():
     return conn
 
 def process_transaction(conn, tx_update):
-    """Extrae la información de la transacción gRPC con blindaje de errores y guarda en DB"""
+    """Extrae la información, filtra en memoria y guarda en DB"""
     try:
-        # Acceso ultra-seguro a los datos crudos
         tx_data = tx_update.transaction
         tx = tx_data.transaction
         meta = tx_data.meta
         slot = tx_update.slot
         
-        # --- AJUSTE DE FIRMA (El culpable del error) ---
-        # Intentamos obtener la firma de las dos formas posibles en gRPC
+        # 1. Extraer firma de forma segura
         raw_sig = getattr(tx, 'signature', getattr(tx, 'sig', None))
-        
-        if not raw_sig:
-            return # Si no hay firma, no podemos procesar
-
+        if not raw_sig: return
         signature = base58.b58encode(raw_sig).decode('utf-8')
-        
-        # --- LUZ DE RAYOS X ---
-        log.info(f"🔍 RECIBIDA TX CRUDA: {signature[:10]}...")
 
-        # 1. Validar estado (meta ya lo tenemos arriba)
-        if not meta or meta.err: 
-            return
-
-        # 2. Extraer cuentas involucradas
-        # En algunas versiones es 'tx.message.account_keys', en otras es 'tx.message.static_account_keys'
+        # 2. Extraer cuentas involucradas (El Filtro de Fuerza Bruta)
         msg = tx.message
         raw_keys = getattr(msg, 'account_keys', getattr(msg, 'static_account_keys', []))
         account_keys = [base58.b58encode(k).decode('utf-8') for k in raw_keys]
         
-        if not account_keys: 
+        # Si NO es Pump.fun, la descartamos en 1 microsegundo
+        if "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" not in account_keys:
+            return
+
+        # 3. Validar estado en blockchain
+        if not meta or meta.err: 
             return
             
         trader = account_keys[0]
 
-        # 3. Buscar diferencias en balances (A prueba de Bots)
+        # 4. Buscar diferencias en balances (A prueba de Bots)
         pre_tokens = {}
         post_tokens = {}
         
-        # Filtramos solo lo que nos importa (Pump.fun)
         for tb in getattr(meta, 'pre_token_balances', []):
             if tb.mint and tb.owner and tb.mint != WSOL_MINT:
                 try: pre_tokens[(tb.mint, tb.owner)] = float(tb.ui_token_amount.ui_amount or 0.0)
@@ -123,11 +114,9 @@ def process_transaction(conn, tx_update):
                 actual_trader = owner 
                 
         if not best_mint or best_delta == 0.0:
-            # --- LUZ DE RAYOS X 2: Ver por qué se descarta ---
-            log.info(f"⏭️ Saltando {signature}: No es un swap de tokens (Delta 0).")
             return 
 
-        # 4. Calcular delta de SOL gastado de forma segura
+        # 5. Calcular delta de SOL
         amount_sol = 0.0
         try:
             if actual_trader in account_keys:
@@ -138,35 +127,32 @@ def process_transaction(conn, tx_update):
         except Exception:
             amount_sol = 0.0
             
-        # 5. Formatear salida final
+        # 6. Formatear y Guardar
         amount_token = abs(best_delta)
         side = "buy" if best_delta > 0 else "sell"
         price_sol = (amount_sol / amount_token) if amount_token > 0 else 0.0
         ts = datetime.now(timezone.utc)
         
-        # 6. Inserción protegida en la base de datos (Usando actual_trader)
         try:
             with conn.cursor() as cur:
                 cur.execute(UPSERT_WALLET, (actual_trader,))
                 cur.execute(INSERT_TX, (ts, signature, actual_trader, best_mint, side, amount_token, amount_sol, price_sol, slot, "pumpfun", "geyser"))
                 
-                # Inyectar en la cola del pipeline interno (Reducers)
                 cur.execute(ENQUEUE_REDUCER, ("position_update", actual_trader, best_mint, signature, 10))
                 cur.execute(ENQUEUE_REDUCER, ("wallet_pnl_update", actual_trader, None, signature, 8))
                 cur.execute(ENQUEUE_REDUCER, ("token_trader_update", None, best_mint, signature, 8))
                 cur.execute(ENQUEUE_REDUCER, ("classification_update", actual_trader, None, signature, 3))
                 
             conn.commit()
-            log.info(f"✅ Trade guardado en Postgres: {side.upper()} {amount_token:.0f} {best_mint[:4]}... por {amount_sol:.4f} SOL")
+            log.info(f"✅ Trade Pump.fun guardado: {side.upper()} {amount_token:.0f} {best_mint[:4]}... por {amount_sol:.4f} SOL")
         except Exception as db_err:
             conn.rollback()
-            log.error(f"⚠️ Error de inserción SQL (saltando txn {signature[:8]}): {db_err}")
 
-    except Exception as general_err:
-        log.error(f"❌ Error crítico de análisis estructural: {general_err}")
+    except Exception:
+        pass # Ignoramos errores de parseo menores para mantener la velocidad extrema
 
 def run_stream():
-    log.info("Iniciando geyser-tx-worker en MODO NUCLEAR...")
+    log.info("Iniciando geyser-tx-worker en Modo Fuerza Bruta...")
     
     while not STOP:
         conn = None
@@ -177,14 +163,10 @@ def run_stream():
 
             request = geyser_pb2.SubscribeRequest()
             
-            # 1. El Latido
-            request.slots["monitor"].CopyFrom(geyser_pb2.SubscribeRequestFilterSlots())
-            
-            # 2. ☢️ MODO NUCLEAR: Sin filtros. TODA la red Solana.
+            # Pedimos todo a la red, pero sin votos para no saturar Docker
             filter_tx = geyser_pb2.SubscribeRequestFilterTransactions()
-            request.transactions["nuclear_stream"].CopyFrom(filter_tx)
-            
-            log.info("📡 Suscrito a TODA LA RED SOLANA (Prueba de estrés)...")
+            filter_tx.vote = False 
+            request.transactions["brute_force"].CopyFrom(filter_tx)
             
             responses = stub.Subscribe(iter([request]))
             
@@ -192,15 +174,7 @@ def run_stream():
                 if STOP: break
                 
                 if response.HasField("transaction"):
-                    # Si llega algo, lo imprimimos gritando
-                    raw_sig = getattr(response.transaction.transaction, 'signature', getattr(response.transaction.transaction, 'sig', b''))
-                    tx_sig = base58.b58encode(raw_sig).decode('utf-8')
-                    log.info(f"💥 BINGO! TX Recibida: {tx_sig[:15]}...")
-                    
-                elif response.HasField("slot"):
-                    # Latido cada 10 slots
-                    if response.slot.slot % 10 == 0:
-                        log.info(f"💓 Latido de Solana - Slot: {response.slot.slot}")
+                    process_transaction(conn, response.transaction)
 
         except Exception as e:
             log.error(f"Error en el stream: {e}")
