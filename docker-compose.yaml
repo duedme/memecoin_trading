@@ -42,6 +42,8 @@ services:
     restart: always
     env_file: [./memecoin_detecting/.env]
     network_mode: host
+    volumes:
+      - ./memecoin_detecting/src:/app
     depends_on:
       db: { condition: service_healthy }
     command: ["python3", "geyser_tx_worker.py"]
@@ -54,6 +56,8 @@ services:
     restart: always
     env_file: [./memecoin_detecting/.env]
     network_mode: host
+    volumes:
+      - ./memecoin_detecting/src:/app
     depends_on:
       db: { condition: service_healthy }
     command: ["python3", "geyser_price_updater.py"]
