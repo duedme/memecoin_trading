@@ -172,20 +172,25 @@ def run_stream():
         conn = None
         try:
             conn = db_connect()
-            # Usar el atajo interno de Docker es más seguro que la IP pública
             channel = grpc.insecure_channel('host.docker.internal:10000')
             stub = geyser_pb2_grpc.GeyserStub(channel)
 
-            # --- SUSCRIPCIÓN MODO "RED GIGANTE + LATIDO" ---
             request = geyser_pb2.SubscribeRequest()
             
-            # 1. El Latido (Slots): Nos dirá si la conexión realmente está viva
+            # 1. El Latido (Dejamos el monitor activo para confirmar conexión)
             request.slots["monitor"].CopyFrom(geyser_pb2.SubscribeRequestFilterSlots())
             
-            # 2. Las Transacciones: Todo lo que toque Pump.fun
-            request.transactions["pump_all"].account_include.append("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+            # 2. Transacciones (Sintaxis estricta de Protobuf)
+            filter_tx = geyser_pb2.SubscribeRequestFilterTransactions()
+            # Programa oficial de Pump.fun
+            filter_tx.account_include.append("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+            # Queremos solo transacciones que no hayan fallado
+            filter_tx.failed = False 
             
-            log.info("📡 Suscrito a Slots (Latido) y Transacciones Pump.fun...")
+            # Inyectamos el filtro en la petición
+            request.transactions["pump_fun_stream"].CopyFrom(filter_tx)
+            
+            log.info("📡 Suscrito a Slots y Transacciones Pump.fun (Filtro Corregido)...")
             
             responses = stub.Subscribe(iter([request]))
             
@@ -195,10 +200,9 @@ def run_stream():
                 if response.HasField("transaction"):
                     process_transaction(conn, response.transaction)
                 elif response.HasField("slot"):
-                    # Imprimimos el latido para comprobar que fluyen los datos
-                    log.info(f"💓 Latido de Solana - Slot Actualizado: {response.slot.slot}")
-                elif response.HasField("ping"):
-                    pass 
+                    # Imprimimos un latido ligero cada ~50 slots para no saturar la pantalla
+                    if response.slot.slot % 50 == 0:
+                        log.info(f"💓 Latido de Solana - Slot: {response.slot.slot}")
 
         except Exception as e:
             log.error(f"Error en el stream: {e}")
