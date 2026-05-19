@@ -183,7 +183,7 @@ def run_stream():
             request.transactions["pump_all"].account_include.append("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
             
             # Queremos transacciones confirmadas rápido (commitment 1 = processed/confirmed)
-            request.commitment = 1 
+            request.commitment = 0
 
             log.info("📡 Suscrito a TODO el tráfico de Pump.fun en gRPC...")
             
