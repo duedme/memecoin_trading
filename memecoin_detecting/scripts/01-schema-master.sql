@@ -253,3 +253,27 @@ BEGIN
     RETURN moved;
 END;
 $$ LANGUAGE plpgsql;
+-- 8. FUNCION FALTANTE DE MANTENIMIENTO
+CREATE OR REPLACE FUNCTION run_retention_cleanup()
+RETURNS TABLE(table_name TEXT, rows_deleted BIGINT) AS $$
+DECLARE
+    n BIGINT;
+BEGIN
+    DELETE FROM reducer_queue
+     WHERE status IN ('done','ignored','dead')
+       AND COALESCE(processed_at, updated_at) < NOW() - INTERVAL '3 days';
+    GET DIAGNOSTICS n = ROW_COUNT;
+    table_name := 'reducer_queue'; rows_deleted := n; RETURN NEXT;
+
+    DELETE FROM chain_events_staging
+     WHERE status IN ('parsed','ignored','error')
+       AND COALESCE(processed_at, inserted_at) < NOW() - INTERVAL '2 days';
+    GET DIAGNOSTICS n = ROW_COUNT;
+    table_name := 'chain_events_staging'; rows_deleted := n; RETURN NEXT;
+
+    DELETE FROM datasource_audit
+     WHERE created_at < NOW() - INTERVAL '14 days';
+    GET DIAGNOSTICS n = ROW_COUNT;
+    table_name := 'datasource_audit'; rows_deleted := n; RETURN NEXT;
+END;
+$$ LANGUAGE plpgsql;
