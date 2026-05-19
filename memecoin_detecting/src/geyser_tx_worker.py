@@ -172,37 +172,33 @@ def run_stream():
         conn = None
         try:
             conn = db_connect()
+            # Usar el atajo interno de Docker es más seguro que la IP pública
             channel = grpc.insecure_channel('host.docker.internal:10000')
             stub = geyser_pb2_grpc.GeyserStub(channel)
 
-            # --- SUSCRIPCIÓN MODO "RED GIGANTE" ---
+            # --- SUSCRIPCIÓN MODO "RED GIGANTE + LATIDO" ---
             request = geyser_pb2.SubscribeRequest()
             
-            # Filtro: Cualquier transacción que involucre el programa de Pump.fun
-            # No filtramos por logs, queremos ver TODO para debuguear
+            # 1. El Latido (Slots): Nos dirá si la conexión realmente está viva
+            request.slots["monitor"].CopyFrom(geyser_pb2.SubscribeRequestFilterSlots())
+            
+            # 2. Las Transacciones: Todo lo que toque Pump.fun
             request.transactions["pump_all"].account_include.append("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
             
-            # Queremos transacciones confirmadas rápido (commitment 1 = processed/confirmed)
-            request.commitment = 0
-
-            log.info("📡 Suscrito a TODO el tráfico de Pump.fun en gRPC...")
+            log.info("📡 Suscrito a Slots (Latido) y Transacciones Pump.fun...")
             
             responses = stub.Subscribe(iter([request]))
             
             for response in responses:
                 if STOP: break
                 
-                # --- LOG DE VERIFICACIÓN DE PAQUETES ---
-                # Esto nos dirá si Geyser está mandando CUALQUIER COSA
                 if response.HasField("transaction"):
                     process_transaction(conn, response.transaction)
+                elif response.HasField("slot"):
+                    # Imprimimos el latido para comprobar que fluyen los datos
+                    log.info(f"💓 Latido de Solana - Slot Actualizado: {response.slot.slot}")
                 elif response.HasField("ping"):
-                    # Solo para saber que el latido del nodo está vivo
                     pass 
-                else:
-                    # Si llega otro tipo de mensaje (slot, block, etc)
-                    # log.info("📦 Recibido paquete de otro tipo...")
-                    pass
 
         except Exception as e:
             log.error(f"Error en el stream: {e}")
