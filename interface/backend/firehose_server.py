@@ -1,3 +1,4 @@
+import os
 import time
 import threading
 import psycopg2
@@ -8,13 +9,28 @@ from shared_config import DB_CONFIG
 app = Flask(__name__)
 socketio = SocketIO(app, async_mode='threading', cors_allowed_origins="*")
 
+def get_db_connection():
+    """Conexión inteligente: Intenta el .env y si falla, asume que está en Docker"""
+    try:
+        return psycopg2.connect(**DB_CONFIG)
+    except psycopg2.OperationalError as e:
+        print(f"⚠️ Falló conexión a {DB_CONFIG.get('host')}. Intentando host de Docker ('db')...")
+        docker_config = DB_CONFIG.copy()
+        docker_config['host'] = 'db'
+        return psycopg2.connect(**docker_config)
+
 def listen_to_db():
-    conn = psycopg2.connect(**DB_CONFIG)
+    conn = None
     last_time_all = None
     last_time_smart = None
     
     while True:
         try:
+            # Auto-reconexión si la base de datos se cae
+            if conn is None or conn.closed != 0:
+                conn = get_db_connection()
+                print("✅ Conectado a la Base de Datos exitosamente.")
+
             with conn.cursor() as cur:
                 # 1. FLUJO GENERAL (Todas las transacciones)
                 if last_time_all is None:
@@ -60,8 +76,13 @@ def listen_to_db():
                     socketio.emit('smart_money', {'text': msg})
                     
         except Exception as e:
-            print(f"Error BD: {e}")
-            conn.rollback()
+            print(f"❌ Error BD: {e}")
+            if conn:
+                try:
+                    conn.rollback()
+                except:
+                    pass
+                conn = None # Forzar reconexión en el siguiente ciclo
             
         time.sleep(0.5)
 
