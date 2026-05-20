@@ -33,15 +33,6 @@ def db():
     conn.autocommit = True
     return conn
 
-# ---------- Frontend estático ----------
-@app.route("/")
-def index():
-    return send_from_directory(FRONTEND_DIR, "dexscreener-clone.html")
-
-@app.route("/<path:path>")
-def static_files(path):
-    return send_from_directory(FRONTEND_DIR, path)
-
 # ---------- Stats ----------
 @app.route("/api/stats")
 def stats():

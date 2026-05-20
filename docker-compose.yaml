@@ -37,7 +37,6 @@ services:
     command: ["python", "-u", "api_server.py"]
     volumes:
       - ./interface/backend:/app
-      - ./interface/frontend:/frontend
 
   # ===== Ingesta de Transacciones (Geyser) =====
   geyser-tx-worker:
