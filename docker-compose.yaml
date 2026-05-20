@@ -124,6 +124,8 @@ services:
       dockerfile: Dockerfile
     container_name: firehose-server
     restart: always
+    environment:
+      - DB_HOST=db
     ports:
       - "5001:5001"
     depends_on:
