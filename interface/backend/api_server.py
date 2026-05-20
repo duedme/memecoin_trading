@@ -165,59 +165,47 @@ def top_traders():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # ---------- Tokens ----------
-TOKEN_SORT_MAP = {
-    "volume":    "m.volume_24h",
-    "mcap":      "m.market_cap_usd",
-    "change24h": "m.change_24h",
-    "txns":      "m.txns_24h",
-    "age":       "t.detected_at",
-    "investors": "inv.inv_total",
-}
-
 @app.route("/api/tokens")
 def tokens():
-    sort  = request.args.get("sort",  "investors")
+    sort  = request.args.get("sort",  "volume")
     order = request.args.get("order", "desc").lower()
     limit = int(request.args.get("limit", "50"))
 
-    sort_col = TOKEN_SORT_MAP.get(sort, "inv.inv_total")
+    # Mapeamos los filtros del frontend a las columnas calculadas
+    sort_map = {
+        "volume": "volume_24h",
+        "txns": "txns_24h",
+        "investors": "inv_total",
+        "newest": "detected_at"
+    }
+    sort_col = sort_map.get(sort, "volume_24h")
     order_sql = "DESC" if order == "desc" else "ASC"
 
     try:
+        # Consulta a prueba de balas: Solo lee de wallettransactions
         with db() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(f"""
-                WITH latest AS (
-                    SELECT DISTINCT ON (mint_address) *
-                      FROM token_metrics
-                     ORDER BY mint_address, time DESC
-                ),
-                inv AS (
-                    SELECT wp.mintaddress AS mint_address,
-                           COUNT(DISTINCT wp.walletaddress) AS inv_total,
-                           COUNT(DISTINCT CASE WHEN wc.behavior='human' THEN wp.walletaddress END) AS humans,
-                           COUNT(DISTINCT CASE WHEN wc.behavior='bot' THEN wp.walletaddress END) AS bots,
-                           COUNT(DISTINCT CASE WHEN wc.investortype='elite' THEN wp.walletaddress END) AS elite,
-                           COUNT(DISTINCT CASE WHEN wc.investortype='profitable' THEN wp.walletaddress END) AS profitable,
-                           COUNT(DISTINCT CASE WHEN wc.investortype='regular' THEN wp.walletaddress END) AS regular,
-                           COUNT(DISTINCT CASE WHEN wc.investortype='losing' THEN wp.walletaddress END) AS losing
-                      FROM wallettransactions wp
-                      LEFT JOIN walletclassifications wc ON wc.walletaddress = wp.walletaddress
-                     GROUP BY wp.mintaddress
-                )
-                SELECT inv.mint_address, 
-                       COALESCE(t.symbol, 'Pump') AS symbol, 
-                       COALESCE(t.name, 'Token Desconocido') AS name, 
-                       t.detected_at, t.amm,
-                       m.price_sol, m.price_usd, m.liquidity_sol, m.market_cap_usd,
-                       m.volume_5m, m.volume_1h, m.volume_6h, m.volume_24h,
-                       m.change_5m, m.change_1h, m.change_6h, m.change_24h,
-                       m.txns_24h, m.makers_24h,
-                       inv.inv_total, inv.humans, inv.bots, inv.elite, inv.profitable, inv.regular, inv.losing
-                  FROM inv
-                  LEFT JOIN latest m ON m.mint_address = inv.mint_address
-                  LEFT JOIN tokens t ON t.mint_address = inv.mint_address
-                 ORDER BY {sort_col} {order_sql} NULLS LAST
-                 LIMIT %s
+                SELECT 
+                    wt.mintaddress AS mint_address,
+                    SUBSTRING(wt.mintaddress, 1, 4) || '...' || SUBSTRING(wt.mintaddress, LENGTH(wt.mintaddress)-3, 4) AS symbol,
+                    'Token Detectado' AS name,
+                    MIN(wt.time) AS detected_at,
+                    SUM(wt.amountsol) AS volume_24h,
+                    COUNT(wt.signature) AS txns_24h,
+                    COUNT(DISTINCT wt.walletaddress) AS inv_total,
+                    
+                    COUNT(DISTINCT CASE WHEN c.investortype='elite' THEN wt.walletaddress END) AS elite,
+                    COUNT(DISTINCT CASE WHEN c.investortype='profitable' THEN wt.walletaddress END) AS profitable,
+                    COUNT(DISTINCT CASE WHEN c.investortype='regular' THEN wt.walletaddress END) AS regular,
+                    COUNT(DISTINCT CASE WHEN c.investortype='losing' THEN wt.walletaddress END) AS losing,
+                    COUNT(DISTINCT CASE WHEN c.behavior='human' THEN wt.walletaddress END) AS humans,
+                    COUNT(DISTINCT CASE WHEN c.behavior='bot' THEN wt.walletaddress END) AS bots
+                    
+                FROM wallettransactions wt
+                LEFT JOIN walletclassifications c ON c.walletaddress = wt.walletaddress
+                GROUP BY wt.mintaddress
+                ORDER BY {sort_col} {order_sql} NULLS LAST
+                LIMIT %s
             """, (limit,))
             rows = cur.fetchall()
 
@@ -227,22 +215,22 @@ def tokens():
                 "mintaddress": r["mint_address"],
                 "symbol":      r["symbol"],
                 "name":        r["name"],
-                "amm":         r["amm"],
+                "amm":         "Pump.fun",
                 "detectedat":  r["detected_at"].isoformat() if r["detected_at"] else None,
-                "pricesol":    r["price_sol"],
-                "priceusd":    r["price_usd"],
-                "liquiditysol":r["liquidity_sol"],
-                "marketcap":   r["market_cap_usd"],
-                "volume5m":    r["volume_5m"],
-                "volume1h":    r["volume_1h"],
-                "volume6h":    r["volume_6h"],
-                "volume24h":   r["volume_24h"],
-                "change5m":    r["change_5m"],
-                "change1h":    r["change_1h"],
-                "change6h":    r["change_6h"],
-                "change24h":   r["change_24h"],
-                "txns24h":     r["txns_24h"],
-                "makers24h":   r["makers_24h"],
+                "pricesol":    0.0,
+                "priceusd":    0.0,
+                "liquiditysol":0.0,
+                "marketcap":   0.0,
+                "volume5m":    0.0,
+                "volume1h":    0.0,
+                "volume6h":    0.0,
+                "volume24h":   float(r["volume_24h"] or 0),
+                "change5m":    0.0,
+                "change1h":    0.0,
+                "change6h":    0.0,
+                "change24h":   0.0,
+                "txns24h":     int(r["txns_24h"] or 0),
+                "makers24h":   0,
                 "investors": {
                     "total":      int(r["inv_total"] or 0),
                     "humans":     int(r["humans"] or 0),
@@ -256,6 +244,7 @@ def tokens():
 
         return jsonify({"success": True, "count": len(out), "tokens": out})
     except Exception as e:
+        print(f"Error en /api/tokens: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 if __name__ == "__main__":
