@@ -6,6 +6,7 @@
     <title>Memecoin Screener</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
 </head>
 <body>
     <!-- Top Bar -->
@@ -20,6 +21,7 @@
 
         <!-- Investor Guide Toggle -->
         <button class="guide-toggle-btn" id="guideToggle">ℹ️ Investor Guide</button>
+        <button class="guide-toggle-btn" id="realtimeToggle" style="margin-left: 10px; border-color: #f39c12; color: #f39c12;">⚡ Real-Time: OFF</button>
 
         <input type="text" class="search-box" id="searchBox" placeholder="Search...">
 

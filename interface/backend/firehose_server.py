@@ -26,26 +26,29 @@ def listen_to_db():
     
     while True:
         try:
-            # Auto-reconexión si la base de datos se cae
             if conn is None or conn.closed != 0:
                 conn = get_db_connection()
                 print("✅ Conectado a la Base de Datos exitosamente.")
 
             with conn.cursor() as cur:
-                # 1. FLUJO GENERAL (Todas las transacciones)
+                # 1. FLUJO GENERAL 
                 if last_time_all is None:
-                    cur.execute("SELECT time, signature, side, amountsol, mintaddress FROM wallettransactions ORDER BY time DESC LIMIT 1")
+                    cur.execute("SELECT time, signature, side, amountsol, mintaddress, walletaddress FROM wallettransactions ORDER BY time DESC LIMIT 1")
                 else:
-                    cur.execute("SELECT time, signature, side, amountsol, mintaddress FROM wallettransactions WHERE time > %s ORDER BY time ASC", (last_time_all,))
+                    cur.execute("SELECT time, signature, side, amountsol, mintaddress, walletaddress FROM wallettransactions WHERE time > %s ORDER BY time ASC", (last_time_all,))
                 
                 for row in cur.fetchall():
-                    tx_time, sig, side, sol, mint = row
+                    tx_time, sig, side, sol, mint, wallet = row
                     last_time_all = tx_time
                     color = "🟢 COMPRA" if side == 'buy' else "🔴 VENTA"
                     msg = f"[{tx_time.strftime('%H:%M:%S.%f')[:-3]}] {color} - {sol:.2f} SOL - Token: {mint[:8]}..."
-                    socketio.emit('new_trade', {'text': msg})
+                    
+                    # ENVIAMOS DATOS ESTRUCTURADOS
+                    socketio.emit('new_trade', {
+                        'text': msg, 'wallet': wallet, 'mint': mint, 'side': side, 'sol': float(sol)
+                    })
 
-                # 2. FLUJO SMART MONEY (Con Wallet Address)
+                # 2. FLUJO SMART MONEY 
                 if last_time_smart is None:
                     cur.execute("""
                         SELECT t.time, t.signature, t.amountsol, t.mintaddress, c.investortype, t.walletaddress 
@@ -68,21 +71,20 @@ def listen_to_db():
                     tx_time, sig, sol, mint, inv_type, wallet = row
                     last_time_smart = tx_time
                     tag = "👑 ELITE" if inv_type == 'elite' else "📈 RENTABLE"
-                    
-                    # Formatear la wallet para que sea corta
                     short_wallet = f"{wallet[:4]}...{wallet[-4:]}" if wallet and len(wallet) > 8 else "Unknown"
-                    
                     msg = f"[{tx_time.strftime('%H:%M:%S')}] 🔥 {tag} ({short_wallet}) COMPRÓ {sol:.2f} SOL del Token {mint[:8]}..."
-                    socketio.emit('smart_money', {'text': msg})
+                    
+                    # ENVIAMOS DATOS ESTRUCTURADOS
+                    socketio.emit('smart_money', {
+                        'text': msg, 'wallet': wallet, 'mint': mint, 'side': 'buy', 'sol': float(sol), 'tag': tag
+                    })
                     
         except Exception as e:
             print(f"❌ Error BD: {e}")
             if conn:
-                try:
-                    conn.rollback()
-                except:
-                    pass
-                conn = None # Forzar reconexión en el siguiente ciclo
+                try: conn.rollback()
+                except: pass
+                conn = None 
             
         time.sleep(0.5)
 

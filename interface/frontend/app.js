@@ -603,4 +603,87 @@ fetchStats();
 setInterval(fetchData, REFRESH_INTERVAL);
 setInterval(fetchStats, 60000);
 
+// ============================================================================
+// REAL-TIME WEBSOCKET LOGIC
+// ============================================================================
+const liveSocket = io({ path: '/socket.io/' });
+let isRealTime = false;
+
+document.getElementById('realtimeToggle').addEventListener('click', (e) => {
+    isRealTime = !isRealTime;
+    e.target.textContent = isRealTime ? '⚡ Real-Time: ON' : '⚡ Real-Time: OFF';
+    e.target.style.backgroundColor = isRealTime ? 'rgba(243, 156, 18, 0.2)' : 'transparent';
+});
+
+liveSocket.on('new_trade', (data) => {
+    if (!isRealTime || data.side !== 'buy') return;
+    injectRealTimeRow(data);
+});
+
+liveSocket.on('smart_money', (data) => {
+    if (!isRealTime) return;
+    injectRealTimeRow(data, true); 
+});
+
+function injectRealTimeRow(data, isSmart = false) {
+    const tbody = document.getElementById('tableBody');
+    const shortWallet = data.wallet ? data.wallet.slice(0, 4) + '...' + data.wallet.slice(-4) : 'Unknown';
+    const shortMint = data.mint ? data.mint.slice(0, 6) + '...' : 'Unknown';
+    
+    // Remove "Loading" or "No data" rows if they exist
+    if(tbody.innerHTML.includes('No traders') || tbody.innerHTML.includes('Loading')) {
+        tbody.innerHTML = '';
+    }
+
+    const flashRow = document.createElement('tr');
+    
+    if (currentView === 'traders') {
+        const bg = isSmart ? 'rgba(243, 156, 18, 0.25)' : 'rgba(46, 204, 113, 0.2)';
+        const accent = isSmart ? '#f39c12' : '#2ecc71';
+        flashRow.style.backgroundColor = bg;
+        flashRow.style.transition = 'background-color 2s';
+        
+        flashRow.innerHTML = `
+            <td>
+                <div class="trader-cell">
+                    <span class="trader-rank" style="color: ${accent};">⚡</span>
+                    <div class="trader-info">
+                        <span class="trader-address">${shortWallet} ${data.tag || ''}</span>
+                        <span class="trader-tags"><span class="tag" style="background:${accent};color:#000;font-weight:bold;">¡Justo compró el Token: ${shortMint}!</span></span>
+                    </div>
+                </div>
+            </td>
+            <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+            <td><span class="positive">+${data.sol.toFixed(2)} SOL</span></td>
+            <td>—</td><td>—</td><td>—</td><td>—</td><td class="age" style="color:${accent}">Ahora mismo</td>
+        `;
+        
+    } else if (currentView === 'tokens') {
+        flashRow.style.backgroundColor = 'rgba(52, 152, 219, 0.2)';
+        flashRow.style.transition = 'background-color 2s';
+        
+        flashRow.innerHTML = `
+            <td>
+                <div class="token-cell">
+                    <span class="token-rank" style="color: #3498db;">⚡</span>
+                    <div class="token-info">
+                        <span class="token-name">${shortMint}</span>
+                        <span class="token-chain" style="color:#3498db;font-weight:bold;">Comprado por: ${shortWallet}</span>
+                    </div>
+                </div>
+            </td>
+            <td class="price">—</td><td class="age" style="color:#3498db">Ahora mismo</td>
+            <td>—</td><td>—</td><td><span class="positive">+${data.sol.toFixed(2)} SOL</span></td>
+            <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+        `;
+    }
+
+    tbody.prepend(flashRow);
+    
+    // Desvanecer el color de fondo lentamente
+    setTimeout(() => {
+        flashRow.style.backgroundColor = 'transparent';
+    }, 1000);
+}
+
 console.log('✅ Memecoin Screener v3.3: Top Traders + Tokens + Investor Classification + Guide');
