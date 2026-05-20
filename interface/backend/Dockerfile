@@ -1,14 +1,13 @@
-FROM python:3.11-slim
-
-ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+# Usamos una imagen de Python ligera
+FROM python:3.10-slim
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
-RUN pip install -r /app/requirements.txt
+# Instalamos las dependencias del sistema necesarias para compilar psycopg2
+RUN apt-get update && apt-get install -y libpq-dev gcc && rm -rf /var/lib/apt/lists/*
 
-COPY . /app
+# Instalamos las librerías de Python exactas que necesita tu Firehose
+RUN pip install --no-cache-dir Flask Flask-SocketIO psycopg2-binary
 
-EXPOSE 8200
-CMD ["python3", "api_server.py"]
+# El comando que mantendrá vivo el servidor (la bandera -u es para ver los logs en tiempo real)
+CMD ["python", "-u", "firehose_server.py"]

@@ -117,5 +117,22 @@ services:
     depends_on: { db: { condition: service_healthy } }
     command: ["python3", "maintenance_worker.py"]
 
+  # ===== Firehose Server =====
+  firehose:
+    build:
+      context: ./interface/backend
+      dockerfile: Dockerfile
+    container_name: firehose-server
+    restart: always
+    ports:
+      - "5001:5001"
+    depends_on:
+      - db
+    env_file:
+      - .env
+    volumes:
+      - ./interface/backend:/app
+      - ./memecoin_detecting/src/shared_config.py:/app/shared_config.py
+
 volumes:
   pgdata:
