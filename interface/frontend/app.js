@@ -310,7 +310,7 @@ function updateBehaviorDropdownCounts() {
 async function fetchData() {
     try {
         if (currentView === 'traders') {
-            const url = `${API_BASE}top-traders?sort=${currentSort}&order=${currentOrder}&limit=50&mintrades=3&timerange=${currentTimeRange}`;
+            const url = `${API_BASE}top-traders?sort=${currentSort}&order=${currentOrder}&limit=50&mintrades=1&timerange=${currentTimeRange}`;
             const res = await fetch(url);
             const data = await res.json();
 
