@@ -165,13 +165,22 @@ def top_traders():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # ---------- Tokens ----------
+TOKEN_SORT_MAP = {
+    "volume":    "m.volume_24h",
+    "mcap":      "m.market_cap_usd",
+    "change24h": "m.change_24h",
+    "txns":      "m.txns_24h",
+    "age":       "t.detected_at",
+    "investors": "inv.inv_total",
+}
+
 @app.route("/api/tokens")
 def tokens():
-    sort  = request.args.get("sort",  "volume")
+    sort  = request.args.get("sort",  "investors")
     order = request.args.get("order", "desc").lower()
     limit = int(request.args.get("limit", "50"))
 
-    sort_col = TOKEN_SORT_MAP.get(sort, "m.volume_24h")
+    sort_col = TOKEN_SORT_MAP.get(sort, "inv.inv_total")
     order_sql = "DESC" if order == "desc" else "ASC"
 
     try:
@@ -183,36 +192,30 @@ def tokens():
                      ORDER BY mint_address, time DESC
                 ),
                 inv AS (
-                    SELECT wp.mint_address,
-                           COUNT(*) AS inv_total,
-                           COUNT(*) FILTER (WHERE wc.behavior='human')        AS humans,
-                           COUNT(*) FILTER (WHERE wc.behavior='bot')          AS bots,
-                           COUNT(*) FILTER (WHERE wc.investortype='elite')       AS elite,
-                           COUNT(*) FILTER (WHERE wc.investortype='profitable')  AS profitable,
-                           COUNT(*) FILTER (WHERE wc.investortype='regular')     AS regular,
-                           COUNT(*) FILTER (WHERE wc.investortype='losing')      AS losing
-                      FROM wallet_positions wp
-                      LEFT JOIN walletclassifications wc
-                             ON wc.walletaddress = wp.wallet_address
-                     WHERE wp.amount_token > 0
-                     GROUP BY wp.mint_address
+                    SELECT wp.mintaddress AS mint_address,
+                           COUNT(DISTINCT wp.walletaddress) AS inv_total,
+                           COUNT(DISTINCT CASE WHEN wc.behavior='human' THEN wp.walletaddress END) AS humans,
+                           COUNT(DISTINCT CASE WHEN wc.behavior='bot' THEN wp.walletaddress END) AS bots,
+                           COUNT(DISTINCT CASE WHEN wc.investortype='elite' THEN wp.walletaddress END) AS elite,
+                           COUNT(DISTINCT CASE WHEN wc.investortype='profitable' THEN wp.walletaddress END) AS profitable,
+                           COUNT(DISTINCT CASE WHEN wc.investortype='regular' THEN wp.walletaddress END) AS regular,
+                           COUNT(DISTINCT CASE WHEN wc.investortype='losing' THEN wp.walletaddress END) AS losing
+                      FROM wallettransactions wp
+                      LEFT JOIN walletclassifications wc ON wc.walletaddress = wp.walletaddress
+                     GROUP BY wp.mintaddress
                 )
-                SELECT t.mint_address, t.symbol, t.name, t.detected_at, t.amm,
+                SELECT inv.mint_address, 
+                       COALESCE(t.symbol, 'Pump') AS symbol, 
+                       COALESCE(t.name, 'Token Desconocido') AS name, 
+                       t.detected_at, t.amm,
                        m.price_sol, m.price_usd, m.liquidity_sol, m.market_cap_usd,
                        m.volume_5m, m.volume_1h, m.volume_6h, m.volume_24h,
                        m.change_5m, m.change_1h, m.change_6h, m.change_24h,
                        m.txns_24h, m.makers_24h,
-                       COALESCE(inv.inv_total, 0)   AS inv_total,
-                       COALESCE(inv.humans, 0)      AS humans,
-                       COALESCE(inv.bots, 0)        AS bots,
-                       COALESCE(inv.elite, 0)       AS elite,
-                       COALESCE(inv.profitable, 0)  AS profitable,
-                       COALESCE(inv.regular, 0)     AS regular,
-                       COALESCE(inv.losing, 0)      AS losing
-                  FROM tokens t
-                  LEFT JOIN latest m ON m.mint_address = t.mint_address
-                  LEFT JOIN inv    ON inv.mint_address = t.mint_address
-                 WHERE t.status IS NOT NULL
+                       inv.inv_total, inv.humans, inv.bots, inv.elite, inv.profitable, inv.regular, inv.losing
+                  FROM inv
+                  LEFT JOIN latest m ON m.mint_address = inv.mint_address
+                  LEFT JOIN tokens t ON t.mint_address = inv.mint_address
                  ORDER BY {sort_col} {order_sql} NULLS LAST
                  LIMIT %s
             """, (limit,))
@@ -241,22 +244,19 @@ def tokens():
                 "txns24h":     r["txns_24h"],
                 "makers24h":   r["makers_24h"],
                 "investors": {
-                    "total":      int(r["inv_total"]),
-                    "humans":     int(r["humans"]),
-                    "bots":       int(r["bots"]),
-                    "elite":      int(r["elite"]),
-                    "profitable": int(r["profitable"]),
-                    "regular":    int(r["regular"]),
-                    "losing":     int(r["losing"]),
+                    "total":      int(r["inv_total"] or 0),
+                    "humans":     int(r["humans"] or 0),
+                    "bots":       int(r["bots"] or 0),
+                    "elite":      int(r["elite"] or 0),
+                    "profitable": int(r["profitable"] or 0),
+                    "regular":    int(r["regular"] or 0),
+                    "losing":     int(r["losing"] or 0),
                 },
             })
 
         return jsonify({"success": True, "count": len(out), "tokens": out})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
-
-# ---------- Tokens ----------
-# (He mantenido este endpoint por si lo necesitas, pero si no tienes la tabla tokens, podría fallar. Si falla, el front ignora ese tab).
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8200)
