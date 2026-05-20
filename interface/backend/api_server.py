@@ -21,7 +21,15 @@ app = Flask(__name__, static_folder=None)
 CORS(app)
 
 def db():
-    conn = psycopg2.connect(**DB_CONFIG)
+    # Buscador de Conexión Inteligente
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+    except psycopg2.OperationalError:
+        print(f"⚠️ Falló conexión a {DB_CONFIG.get('host')}. Intentando host de Docker ('db')...")
+        docker_config = DB_CONFIG.copy()
+        docker_config['host'] = 'db'
+        conn = psycopg2.connect(**docker_config)
+        
     conn.autocommit = True
     return conn
 

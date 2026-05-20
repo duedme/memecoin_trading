@@ -24,6 +24,7 @@ services:
     build:
       context: ./interface/backend
       dockerfile: Dockerfile
+    container_name: backend-api
     restart: always
     env_file: ./memecoin_detecting/.env
     environment:
@@ -33,6 +34,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    command: ["python", "-u", "api_server.py"]
+    volumes:
+      - ./interface/backend:/app
+      - ./interface/frontend:/frontend
 
   # ===== Ingesta de Transacciones (Geyser) =====
   geyser-tx-worker:
@@ -124,14 +129,14 @@ services:
       dockerfile: Dockerfile
     container_name: firehose-server
     restart: always
-    environment:
-      - DB_HOST=db
     ports:
       - "5001:5001"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     env_file:
-      - .env
+      - ./memecoin_detecting/.env
+    command: ["python", "-u", "firehose_server.py"]
     volumes:
       - ./interface/backend:/app
       - ./memecoin_detecting/src/shared_config.py:/app/shared_config.py
