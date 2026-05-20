@@ -212,7 +212,7 @@ def tokens():
                   FROM tokens t
                   LEFT JOIN latest m ON m.mint_address = t.mint_address
                   LEFT JOIN inv    ON inv.mint_address = t.mint_address
-                 WHERE t.status = 'active'
+                 WHERE t.status IS NOT NULL
                  ORDER BY {sort_col} {order_sql} NULLS LAST
                  LIMIT %s
             """, (limit,))
