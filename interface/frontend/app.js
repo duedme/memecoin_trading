@@ -97,7 +97,7 @@ function formatSOL(val) {
 }
 
 function formatPrice(price) {
-    if (!price) price = 0;
+    if (!price || price === 0 || isNaN(price)) return `<span class="neutral" style="font-size:12px;color:#888;">Calculando...</span>`;
     if (price < 0.0000001) {
         const exp = Math.floor(Math.log10(price));
         const mantissa = price / Math.pow(10, exp);
@@ -112,7 +112,7 @@ function formatPrice(price) {
 }
 
 function formatCompact(value) {
-    if (!value) value = 0;
+    if (!value || value === 0 || isNaN(value)) return `<span class="neutral">–</span>`;
     if (value >= 1e9) return (value / 1e9).toFixed(1) + 'B';
     if (value >= 1e6) return (value / 1e6).toFixed(1) + 'M';
     if (value >= 1e3) return (value / 1e3).toFixed(0) + 'K';
@@ -125,7 +125,7 @@ function formatNumber(num) {
 }
 
 function formatPercent(val) {
-    if (val === null || val === undefined) return `<span class="neutral">–</span>`;
+    if (!val || val === 0 || isNaN(val)) return `<span class="neutral">–</span>`;
     const cls = val > 0 ? 'positive' : 'negative';
     let formatted;
     if (Math.abs(val) >= 1000) formatted = val.toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -455,7 +455,7 @@ function renderTokens(tokens) {
                 </div>
             </td>
             <td class="price">${formatPrice(t.price)}</td>
-            <td class="age">${t.age}</td>
+            <td class="age">${t.detectedat ? t.detectedat.split('T')[0] : 'Reciente'}</td>
             <td>${formatInvestors(t.investors)}</td>
             <td>${formatNumber(t.txns)}</td>
             <td>${formatCompact(t.volume24h)}</td>
