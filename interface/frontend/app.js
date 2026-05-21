@@ -618,28 +618,30 @@ document.getElementById('realtimeToggle').addEventListener('click', (e) => {
 liveSocket.on('new_trade', (data) => {
     if (!isRealTime || data.side !== 'buy') return;
     
-    // Obtenemos el filtro seleccionado en el HTML (asumiendo que guardas el valor en currentBehaviorFilter)
-    // Si no tienes la variable, leemos directamente del elemento HTML:
-    const filterSelect = document.getElementById('behaviorFilter'); 
-    const filter = filterSelect ? filterSelect.value.toLowerCase() : 'all';
-    
     let match = false;
-    if (filter === 'all' || filter === 'all traders') match = true;
-    else if (filter.includes('bot') && data.behavior === 'bot') match = true;
-    else if (filter.includes('human') && data.behavior === 'human') match = true;
-    else if (filter.includes('elite') && data.investortype === 'elite') match = true;
-    else if (filter.includes('profitable') && data.investortype === 'profitable') match = true;
+    
+    if (currentView === 'tokens') {
+        // En Tokens no hay filtro de inversores, mostramos todo el flujo
+        match = true;
+    } else {
+        // En Traders, buscamos el menú desplegable (select)
+        const filterSelect = document.querySelector('select'); 
+        const filter = filterSelect ? filterSelect.value.toLowerCase() : 'all';
+        
+        if (filter.includes('all')) match = true;
+        else if (filter.includes('bot') && data.behavior === 'bot') match = true;
+        else if (filter.includes('human') && data.behavior === 'human') match = true;
+        else if (filter.includes('elite') && data.investortype === 'elite') match = true;
+        else if (filter.includes('profitable') && data.investortype === 'profitable') match = true;
+    }
 
     if (match) {
-        // Determinamos si es "Smart Money" para darle un color especial
         const isSmart = data.investortype === 'elite' || data.investortype === 'profitable';
         injectRealTimeRow(data, isSmart);
     }
 });
 
-// El evento 'smart_money' ya no lo usamos para dibujar, porque 'new_trade' ya trae todo clasificado.
-// Lo podemos dejar vacío para no romper nada.
-liveSocket.on('smart_money', (data) => {});
+liveSocket.on('smart_money', (data) => {}); // Lo dejamos vacío por seguridad
 
 function injectRealTimeRow(data, isSmart = false) {
     const tbody = document.getElementById('tableBody');
@@ -658,8 +660,6 @@ function injectRealTimeRow(data, isSmart = false) {
         flashRow.style.backgroundColor = bg;
         flashRow.style.transition = 'background-color 2s';
         
-        // Mapeo exacto de las 12 columnas:
-        // TRADER | P&L | WIN RATE | ROI | SCORE | TRADES | INVESTED | REALIZED | BEST | WORST | TOKENS | LAST SEEN
         flashRow.innerHTML = `
             <td>
                 <div class="trader-cell">
@@ -686,11 +686,38 @@ function injectRealTimeRow(data, isSmart = false) {
             <td><span style="color:#f39c12; font-weight:bold; font-family:monospace;">${shortMint}</span></td>
             <td class="age" style="color:${accent}">Ahora mismo</td>
         `;
+        
+    } else if (currentView === 'tokens') {
+        flashRow.style.backgroundColor = 'rgba(52, 152, 219, 0.2)';
+        flashRow.style.transition = 'background-color 2s';
+        
+        flashRow.innerHTML = `
+            <td>
+                <div class="token-cell">
+                    <span class="token-rank" style="color: #3498db;">⚡</span>
+                    <div class="token-info">
+                        <span class="token-name">${shortMint}</span>
+                        <span class="token-chain" style="color:#3498db;font-weight:bold;">Comprado por: ${shortWallet}</span>
+                    </div>
+                </div>
+            </td>
+            <td><span class="neutral" style="font-size:12px;color:#3498db;">En vivo</span></td>
+            <td class="age" style="color:#3498db">Ahora mismo</td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="positive">+${data.sol.toFixed(2)} SOL</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+        `;
     }
 
     tbody.prepend(flashRow);
     
-    // Desvanecer el color de fondo lentamente
     setTimeout(() => {
         flashRow.style.backgroundColor = 'transparent';
     }, 1000);
