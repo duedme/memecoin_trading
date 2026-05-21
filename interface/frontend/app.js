@@ -645,8 +645,8 @@ liveSocket.on('smart_money', (data) => {}); // Lo dejamos vacío por seguridad
 
 function injectRealTimeRow(data, isSmart = false) {
     const tbody = document.getElementById('tableBody');
-    const shortWallet = data.wallet ? data.wallet.slice(0, 4) + '...' + data.wallet.slice(-4) : 'Unknown';
-    const shortMint = data.mint ? data.mint.slice(0, 6) + '...' : 'Unknown';
+    const shortWallet = data.wallet || 'Unknown';
+    const shortMint = data.mint || 'Unknown';
     
     if(tbody.innerHTML.includes('No traders') || tbody.innerHTML.includes('Loading')) {
         tbody.innerHTML = '';

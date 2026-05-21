@@ -187,7 +187,7 @@ def tokens():
             cur.execute(f"""
                 SELECT 
                     wt.mintaddress AS mint_address,
-                    SUBSTRING(wt.mintaddress, 1, 4) || '...' || SUBSTRING(wt.mintaddress, LENGTH(wt.mintaddress)-3, 4) AS symbol,
+                    wt.mintaddress AS symbol,
                     'Token Detectado' AS name,
                     MIN(wt.time) AS detected_at,
                     SUM(wt.amountsol) AS volume_24h,
