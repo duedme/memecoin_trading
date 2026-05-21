@@ -678,7 +678,7 @@ function injectRealTimeRow(data, isSmart = false) {
             <td><span class="neutral">–</span></td>
             <td><span class="neutral">–</span></td>
             <td><span class="neutral">–</span></td>
-            <td><span class="neutral">1</span></td>
+            <td><span class="neutral" style="font-size:11px;">NUEVO</span></td>
             <td><span class="positive">+${data.sol.toFixed(2)} SOL</span></td>
             <td><span class="neutral">–</span></td>
             <td><span class="neutral">–</span></td>
