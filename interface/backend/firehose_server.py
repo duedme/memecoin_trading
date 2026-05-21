@@ -55,7 +55,7 @@ def listen_to_db():
                     
                     # RECREAMOS EL TEXTO PARA LA TERMINAL DE ADMIN
                     color = "🟢 COMPRA" if side == 'buy' else "🔴 VENTA"
-                    msg = f"[{tx_time.strftime('%H:%M:%S.%f')[:-3]}] {color} - {sol:.2f} SOL - Token: {mint[:8]}..."
+                    msg = f"[{tx_time.strftime('%H:%M:%S.%f')[:-3]}] {color} - {sol:.2f} SOL - Token: {mint} - Wallet: {wallet}"
                     
                     # ENVIAMOS DATOS ESTRUCTURADOS (Para la web) + TEXTO (Para el admin)
                     socketio.emit('new_trade', {
@@ -92,7 +92,7 @@ def listen_to_db():
                     last_time_smart = tx_time
                     tag = "👑 ELITE" if inv_type == 'elite' else "📈 RENTABLE"
                     short_wallet = f"{wallet[:4]}...{wallet[-4:]}" if wallet and len(wallet) > 8 else "Unknown"
-                    msg = f"[{tx_time.strftime('%H:%M:%S')}] 🔥 {tag} ({short_wallet}) COMPRÓ {sol:.2f} SOL del Token {mint[:8]}..."
+                    msg = f"[{tx_time.strftime('%H:%M:%S')}] 🔥 {tag} ({wallet}) COMPRÓ {sol:.2f} SOL del Token {mint}"
                     
                     # ENVIAMOS DATOS ESTRUCTURADOS
                     socketio.emit('smart_money', {

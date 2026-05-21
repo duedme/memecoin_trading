@@ -386,7 +386,7 @@ function renderTraders(traders) {
         const rankClass = rank === 1 ? 'gold' : rank === 2 ? 'silver' : rank === 3 ? 'bronze' : '';
         const avatarClass = rank === 1 ? 'top1' : rank === 2 ? 'top2' : rank === 3 ? 'top3' : 'normal';
         const rankIcon = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '';
-        const shortAddr = `${t.walletaddress.slice(0, 6)}...${t.walletaddress.slice(-4)}`;
+        const shortAddr = t.walletaddress;
         const classificationBadge = formatInvestorBadge(t.classification);
         const score = t.classification ? t.classification.investorscore : 0;
 
