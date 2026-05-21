@@ -52,9 +52,14 @@ def listen_to_db():
                 for row in cur.fetchall():
                     tx_time, sig, side, sol, mint, wallet, behavior, inv_type = row
                     last_time_all = tx_time
-
-                    # ENVIAMOS DATOS ESTRUCTURADOS Y CLASIFICADOS
+                    
+                    # RECREAMOS EL TEXTO PARA LA TERMINAL DE ADMIN
+                    color = "🟢 COMPRA" if side == 'buy' else "🔴 VENTA"
+                    msg = f"[{tx_time.strftime('%H:%M:%S.%f')[:-3]}] {color} - {sol:.2f} SOL - Token: {mint[:8]}..."
+                    
+                    # ENVIAMOS DATOS ESTRUCTURADOS (Para la web) + TEXTO (Para el admin)
                     socketio.emit('new_trade', {
+                        'text': msg,
                         'wallet': wallet,
                         'mint': mint,
                         'side': side,
