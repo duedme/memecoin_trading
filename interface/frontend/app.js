@@ -649,13 +649,13 @@ function injectRealTimeRow(data, isSmart = false) {
                     <span class="trader-rank" style="color: ${accent};">⚡</span>
                     <div class="trader-info">
                         <span class="trader-address">${shortWallet} ${data.tag || ''}</span>
-                        <span class="trader-tags"><span class="tag" style="background:${accent};color:#000;font-weight:bold;">¡Justo compró el Token: ${shortMint}!</span></span>
+                        <span class="trader-tags"><span class="tag" style="background:${accent};color:#000;font-weight:bold;">Compró Token: ${shortMint}</span></span>
                     </div>
                 </div>
             </td>
-            <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+            <td></td><td></td><td></td><td></td><td></td>
             <td><span class="positive">+${data.sol.toFixed(2)} SOL</span></td>
-            <td>—</td><td>—</td><td>—</td><td>—</td><td class="age" style="color:${accent}">Ahora mismo</td>
+            <td></td><td></td><td></td><td></td><td class="age" style="color:${accent}">Ahora mismo</td>
         `;
         
     } else if (currentView === 'tokens') {
@@ -672,9 +672,9 @@ function injectRealTimeRow(data, isSmart = false) {
                     </div>
                 </div>
             </td>
-            <td class="price">—</td><td class="age" style="color:#3498db">Ahora mismo</td>
-            <td>—</td><td>—</td><td><span class="positive">+${data.sol.toFixed(2)} SOL</span></td>
-            <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+            <td><span class="neutral" style="font-size:12px;color:#3498db;">En vivo</span></td><td class="age" style="color:#3498db">Ahora mismo</td>
+            <td></td><td></td><td><span class="positive">+${data.sol.toFixed(2)} SOL</span></td>
+            <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
         `;
     }
 
