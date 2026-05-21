@@ -618,37 +618,34 @@ document.getElementById('realtimeToggle').addEventListener('click', (e) => {
 liveSocket.on('new_trade', (data) => {
     if (!isRealTime || data.side !== 'buy') return;
     
-    // Leer el selector del filtro (Ej: "elite", "bot", "all")
-    const filter = currentBehaviorFilter || 'all'; 
+    // Obtenemos el filtro seleccionado en el HTML (asumiendo que guardas el valor en currentBehaviorFilter)
+    // Si no tienes la variable, leemos directamente del elemento HTML:
+    const filterSelect = document.getElementById('behaviorFilter'); 
+    const filter = filterSelect ? filterSelect.value.toLowerCase() : 'all';
     
-    // En el flujo normal, no sabemos si es Elite, así que lo mostramos si el filtro es "all"
-    if (filter === 'all') {
-        injectRealTimeRow(data, false);
+    let match = false;
+    if (filter === 'all' || filter === 'all traders') match = true;
+    else if (filter.includes('bot') && data.behavior === 'bot') match = true;
+    else if (filter.includes('human') && data.behavior === 'human') match = true;
+    else if (filter.includes('elite') && data.investortype === 'elite') match = true;
+    else if (filter.includes('profitable') && data.investortype === 'profitable') match = true;
+
+    if (match) {
+        // Determinamos si es "Smart Money" para darle un color especial
+        const isSmart = data.investortype === 'elite' || data.investortype === 'profitable';
+        injectRealTimeRow(data, isSmart);
     }
 });
 
-liveSocket.on('smart_money', (data) => {
-    if (!isRealTime) return;
-    
-    const filter = currentBehaviorFilter || 'all';
-    
-    // Extraer el tipo de la etiqueta (👑 ELITE -> elite, 📈 RENTABLE -> profitable)
-    let type = 'all';
-    if (data.tag.includes('ELITE')) type = 'elite';
-    if (data.tag.includes('RENTABLE')) type = 'profitable';
-    
-    // Mostrar si coincide con el filtro, o si el filtro es "all"
-    if (filter === 'all' || filter === type) {
-        injectRealTimeRow(data, true);
-    }
-});
+// El evento 'smart_money' ya no lo usamos para dibujar, porque 'new_trade' ya trae todo clasificado.
+// Lo podemos dejar vacío para no romper nada.
+liveSocket.on('smart_money', (data) => {});
 
 function injectRealTimeRow(data, isSmart = false) {
     const tbody = document.getElementById('tableBody');
     const shortWallet = data.wallet ? data.wallet.slice(0, 4) + '...' + data.wallet.slice(-4) : 'Unknown';
     const shortMint = data.mint ? data.mint.slice(0, 6) + '...' : 'Unknown';
     
-    // Remove "Loading" or "No data" rows if they exist
     if(tbody.innerHTML.includes('No traders') || tbody.innerHTML.includes('Loading')) {
         tbody.innerHTML = '';
     }
@@ -661,38 +658,33 @@ function injectRealTimeRow(data, isSmart = false) {
         flashRow.style.backgroundColor = bg;
         flashRow.style.transition = 'background-color 2s';
         
+        // Mapeo exacto de las 12 columnas:
+        // TRADER | P&L | WIN RATE | ROI | SCORE | TRADES | INVESTED | REALIZED | BEST | WORST | TOKENS | LAST SEEN
         flashRow.innerHTML = `
             <td>
                 <div class="trader-cell">
                     <span class="trader-rank" style="color: ${accent};">⚡</span>
                     <div class="trader-info">
-                        <span class="trader-address">${shortWallet} ${data.tag || ''}</span>
-                        <span class="trader-tags"><span class="tag" style="background:${accent};color:#000;font-weight:bold;">Compró Token: ${shortMint}</span></span>
+                        <span class="trader-address">${shortWallet}</span>
+                        <span class="trader-tags">
+                            <span class="tag" style="background:${accent};color:#000;font-weight:bold;">
+                                ${data.investortype ? data.investortype.toUpperCase() : 'NUEVO'}
+                            </span>
+                        </span>
                     </div>
                 </div>
             </td>
-            <td></td><td></td><td></td><td></td><td></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">1</span></td>
             <td><span class="positive">+${data.sol.toFixed(2)} SOL</span></td>
-            <td></td><td></td><td></td><td></td><td class="age" style="color:${accent}">Ahora mismo</td>
-        `;
-        
-    } else if (currentView === 'tokens') {
-        flashRow.style.backgroundColor = 'rgba(52, 152, 219, 0.2)';
-        flashRow.style.transition = 'background-color 2s';
-        
-        flashRow.innerHTML = `
-            <td>
-                <div class="token-cell">
-                    <span class="token-rank" style="color: #3498db;">⚡</span>
-                    <div class="token-info">
-                        <span class="token-name">${shortMint}</span>
-                        <span class="token-chain" style="color:#3498db;font-weight:bold;">Comprado por: ${shortWallet}</span>
-                    </div>
-                </div>
-            </td>
-            <td><span class="neutral" style="font-size:12px;color:#3498db;">En vivo</span></td><td class="age" style="color:#3498db">Ahora mismo</td>
-            <td></td><td></td><td><span class="positive">+${data.sol.toFixed(2)} SOL</span></td>
-            <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">–</span></td>
+            <td><span style="color:#f39c12; font-weight:bold; font-family:monospace;">${shortMint}</span></td>
+            <td class="age" style="color:${accent}">Ahora mismo</td>
         `;
     }
 
