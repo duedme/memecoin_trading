@@ -31,24 +31,39 @@ def listen_to_db():
                 print("✅ Conectado a la Base de Datos exitosamente.")
 
             with conn.cursor() as cur:
-                # 1. FLUJO GENERAL 
+                # 1. FLUJO GENERAL (Ahora incluye comportamiento y tipo de inversor)
                 if last_time_all is None:
-                    cur.execute("SELECT time, signature, side, amountsol, mintaddress, walletaddress FROM wallettransactions ORDER BY time DESC LIMIT 1")
+                    cur.execute("""
+                        SELECT t.time, t.signature, t.side, t.amountsol, t.mintaddress, t.walletaddress,
+                               c.behavior, c.investortype
+                        FROM wallettransactions t
+                        LEFT JOIN walletclassifications c ON t.walletaddress = c.walletaddress
+                        ORDER BY t.time DESC LIMIT 1
+                    """)
                 else:
-                    cur.execute("SELECT time, signature, side, amountsol, mintaddress, walletaddress FROM wallettransactions WHERE time > %s ORDER BY time ASC", (last_time_all,))
-                
+                    cur.execute("""
+                        SELECT t.time, t.signature, t.side, t.amountsol, t.mintaddress, t.walletaddress,
+                               c.behavior, c.investortype
+                        FROM wallettransactions t
+                        LEFT JOIN walletclassifications c ON t.walletaddress = c.walletaddress
+                        WHERE t.time > %s ORDER BY t.time ASC
+                    """, (last_time_all,))
+
                 for row in cur.fetchall():
-                    tx_time, sig, side, sol, mint, wallet = row
+                    tx_time, sig, side, sol, mint, wallet, behavior, inv_type = row
                     last_time_all = tx_time
-                    color = "🟢 COMPRA" if side == 'buy' else "🔴 VENTA"
-                    msg = f"[{tx_time.strftime('%H:%M:%S.%f')[:-3]}] {color} - {sol:.2f} SOL - Token: {mint[:8]}..."
-                    
-                    # ENVIAMOS DATOS ESTRUCTURADOS
+
+                    # ENVIAMOS DATOS ESTRUCTURADOS Y CLASIFICADOS
                     socketio.emit('new_trade', {
-                        'text': msg, 'wallet': wallet, 'mint': mint, 'side': side, 'sol': float(sol)
+                        'wallet': wallet,
+                        'mint': mint,
+                        'side': side,
+                        'sol': float(sol),
+                        'behavior': behavior or 'unclassified',
+                        'investortype': inv_type or 'unclassified'
                     })
 
-                # 2. FLUJO SMART MONEY 
+                # 2. FLUJO SMART MONEY
                 if last_time_smart is None:
                     cur.execute("""
                         SELECT t.time, t.signature, t.amountsol, t.mintaddress, c.investortype, t.walletaddress 
