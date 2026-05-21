@@ -675,9 +675,9 @@ function injectRealTimeRow(data, isSmart = false) {
                 </div>
             </td>
             <td><span class="neutral">–</span></td>
+            <td><span class="neutral">${data.winrate > 0 ? data.winrate.toFixed(1) + '%' : '–'}</span></td>
             <td><span class="neutral">–</span></td>
-            <td><span class="neutral">–</span></td>
-            <td><span class="neutral">–</span></td>
+            <td><span class="neutral">${data.score > 0 ? data.score : '–'}</span></td>
             <td><span class="neutral" style="font-size:11px;">NUEVO</span></td>
             <td><span class="positive">+${data.sol.toFixed(2)} SOL</span></td>
             <td><span class="neutral">–</span></td>

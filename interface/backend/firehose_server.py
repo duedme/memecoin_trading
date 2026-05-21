@@ -31,11 +31,11 @@ def listen_to_db():
                 print("✅ Conectado a la Base de Datos exitosamente.")
 
             with conn.cursor() as cur:
-                # 1. FLUJO GENERAL (Ahora incluye comportamiento y tipo de inversor)
+                # 1. FLUJO GENERAL (Ahora incluye comportamiento, tipo de inversor, winrate y score)
                 if last_time_all is None:
                     cur.execute("""
                         SELECT t.time, t.signature, t.side, t.amountsol, t.mintaddress, t.walletaddress,
-                               c.behavior, c.investortype
+                               c.behavior, c.investortype, c.winrate, c.investorscore
                         FROM wallettransactions t
                         LEFT JOIN walletclassifications c ON t.walletaddress = c.walletaddress
                         ORDER BY t.time DESC LIMIT 1
@@ -43,32 +43,35 @@ def listen_to_db():
                 else:
                     cur.execute("""
                         SELECT t.time, t.signature, t.side, t.amountsol, t.mintaddress, t.walletaddress,
-                               c.behavior, c.investortype
+                               c.behavior, c.investortype, c.winrate, c.investorscore
                         FROM wallettransactions t
                         LEFT JOIN walletclassifications c ON t.walletaddress = c.walletaddress
                         WHERE t.time > %s ORDER BY t.time ASC
                     """, (last_time_all,))
-
+                
                 for row in cur.fetchall():
-                    tx_time, sig, side, sol, mint, wallet, behavior, inv_type = row
+                    # Desempaquetamos exactamente las 10 variables que pedimos en el SQL
+                    tx_time, sig, side, sol, mint, wallet, behavior, inv_type, winrate, score = row
                     last_time_all = tx_time
                     
-                    # RECREAMOS EL TEXTO PARA LA TERMINAL DE ADMIN
+                    # RECREAMOS EL TEXTO PARA LA TERMINAL DE ADMIN (con la dirección completa)
                     color = "🟢 COMPRA" if side == 'buy' else "🔴 VENTA"
                     msg = f"[{tx_time.strftime('%H:%M:%S.%f')[:-3]}] {color} - {sol:.2f} SOL - Token: {mint} - Wallet: {wallet}"
                     
                     # ENVIAMOS DATOS ESTRUCTURADOS (Para la web) + TEXTO (Para el admin)
                     socketio.emit('new_trade', {
                         'text': msg,
-                        'wallet': wallet,
-                        'mint': mint,
-                        'side': side,
+                        'wallet': wallet, 
+                        'mint': mint, 
+                        'side': side, 
                         'sol': float(sol),
                         'behavior': behavior or 'unclassified',
-                        'investortype': inv_type or 'unclassified'
+                        'investortype': inv_type or 'unclassified',
+                        'winrate': float(winrate) if winrate else 0.0,
+                        'score': int(score) if score else 0
                     })
 
-                # 2. FLUJO SMART MONEY
+                # 2. FLUJO SMART MONEY 
                 if last_time_smart is None:
                     cur.execute("""
                         SELECT t.time, t.signature, t.amountsol, t.mintaddress, c.investortype, t.walletaddress 
@@ -91,12 +94,17 @@ def listen_to_db():
                     tx_time, sig, sol, mint, inv_type, wallet = row
                     last_time_smart = tx_time
                     tag = "👑 ELITE" if inv_type == 'elite' else "📈 RENTABLE"
-                    short_wallet = f"{wallet[:4]}...{wallet[-4:]}" if wallet and len(wallet) > 8 else "Unknown"
+                    
+                    # Mensaje con la wallet completa para la terminal Admin
                     msg = f"[{tx_time.strftime('%H:%M:%S')}] 🔥 {tag} ({wallet}) COMPRÓ {sol:.2f} SOL del Token {mint}"
                     
-                    # ENVIAMOS DATOS ESTRUCTURADOS
                     socketio.emit('smart_money', {
-                        'text': msg, 'wallet': wallet, 'mint': mint, 'side': 'buy', 'sol': float(sol), 'tag': tag
+                        'text': msg, 
+                        'wallet': wallet, 
+                        'mint': mint, 
+                        'side': 'buy', 
+                        'sol': float(sol), 
+                        'tag': tag
                     })
                     
         except Exception as e:
@@ -106,6 +114,7 @@ def listen_to_db():
                 except: pass
                 conn = None 
             
+        import time
         time.sleep(0.5)
 
 @app.route('/admin/live-feed')
