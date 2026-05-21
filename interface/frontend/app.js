@@ -617,12 +617,30 @@ document.getElementById('realtimeToggle').addEventListener('click', (e) => {
 
 liveSocket.on('new_trade', (data) => {
     if (!isRealTime || data.side !== 'buy') return;
-    injectRealTimeRow(data);
+    
+    // Leer el selector del filtro (Ej: "elite", "bot", "all")
+    const filter = currentBehaviorFilter || 'all'; 
+    
+    // En el flujo normal, no sabemos si es Elite, así que lo mostramos si el filtro es "all"
+    if (filter === 'all') {
+        injectRealTimeRow(data, false);
+    }
 });
 
 liveSocket.on('smart_money', (data) => {
     if (!isRealTime) return;
-    injectRealTimeRow(data, true); 
+    
+    const filter = currentBehaviorFilter || 'all';
+    
+    // Extraer el tipo de la etiqueta (👑 ELITE -> elite, 📈 RENTABLE -> profitable)
+    let type = 'all';
+    if (data.tag.includes('ELITE')) type = 'elite';
+    if (data.tag.includes('RENTABLE')) type = 'profitable';
+    
+    // Mostrar si coincide con el filtro, o si el filtro es "all"
+    if (filter === 'all' || filter === type) {
+        injectRealTimeRow(data, true);
+    }
 });
 
 function injectRealTimeRow(data, isSmart = false) {
