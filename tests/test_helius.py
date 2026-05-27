@@ -2,40 +2,66 @@ import os
 import time
 from dotenv import load_dotenv
 from solana.rpc.api import Client
-from solders.pubkey import Pubkey
+from solders.keypair import Keypair
+from solders.system_program import TransferParams, transfer
+from solders.transaction import VersionedTransaction
+from solders.message import MessageV0
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
-
 helius_api_key = os.getenv("HELIUS_API_KEY")
 
-def test_helius():
-    print("Starting Helius test...")
+def test_helius_send():
+    print("Starting Helius transaction submission test...")
     
     if not helius_api_key:
-        print("Error: HELIUS_API_KEY not found in .env file.")
+        print("Error: HELIUS_API_KEY not found.")
         return
 
     helius_url = f"https://mainnet.helius-rpc.com/?api-key={helius_api_key}"
     client = Client(helius_url)
     
-    # Using a public wallet for the test (e.g., Binance Hot Wallet)
-    test_wallet = Pubkey.from_string("5tzFkiKscXHK5ZXCGbXZzV7MgeDkheEhhHhhZ1b2nK7t")
+    # Generate temporary wallet for signing
+    temp_wallet = Keypair()
+    print(f"Wallet temporal generada: {temp_wallet.pubkey()}")
     
-    start_time = time.time()
     try:
-        response = client.get_balance(test_wallet)
+        # 1. Get recent blockhash via Helius
+        blockhash_resp = client.get_latest_blockhash()
+        recent_blockhash = blockhash_resp.value.blockhash
+        
+        # 2. Instruction: Test transfer (0 SOL)
+        test_instruction = transfer(
+            TransferParams(
+                from_pubkey=temp_wallet.pubkey(),
+                to_pubkey=temp_wallet.pubkey(),
+                lamports=0
+            )
+        )
+        
+        # 3. Compile and sign the transaction
+        message = MessageV0.try_compile(
+            payer=temp_wallet.pubkey(),
+            instructions=[test_instruction],
+            address_lookup_table_accounts=[],
+            recent_blockhash=recent_blockhash,
+        )
+        tx = VersionedTransaction(message, [temp_wallet])
+        
+        # 4. Send transaction through Helius RPC
+        print("Enviando transacción:")
+        start_time = time.time()
+        
+        # The RPC will simulate the transaction first and reject it for insufficient funds
+        response = client.send_transaction(tx)
         end_time = time.time()
         
-        sol_balance = response.value / 1_000_000_000
         latency = (end_time - start_time) * 1000
-        
-        print("Connection successful.")
-        print(f"Balance retrieved: {sol_balance} SOL")
-        print(f"Approximate HTTP latency: {latency:.2f} ms")
+        print(f"Respuesta de Helius: {response}")
+        print(f"Latencia: {latency:.2f} ms")
         
     except Exception as e:
-        print(f"Error connecting to Helius: {e}")
+        print(f"Error esperado por falta de balance: {e}")
 
 if __name__ == "__main__":
-    test_helius()
+    test_helius_send()

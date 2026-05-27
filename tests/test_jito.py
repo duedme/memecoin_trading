@@ -1,5 +1,6 @@
 import requests
 import json
+import base58
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
@@ -17,11 +18,9 @@ rpc_client = Client("https://api.mainnet-beta.solana.com")
 jito_tip_account = Pubkey.from_string("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5")
 
 def test_jito():
-    print("Starting Jito bundle submission test...")
-    
     # Generate a temporary wallet for signing
     temp_wallet = Keypair()
-    print(f"Temporary wallet generated: {temp_wallet.pubkey()}")
+    print(f"Wallet temporal generada: {temp_wallet.pubkey()}")
     
     try:
         # 1. Get recent blockhash
@@ -56,7 +55,8 @@ def test_jito():
         tx = VersionedTransaction(message, [temp_wallet])
         
         # 5. Serialize to base58 as required by Jito
-        tx_base58 = str(tx)
+        tx_bytes = bytes(tx)
+        tx_base58 = base58.b58encode(tx_bytes).decode('ascii')
         
         # 6. Prepare the bundle payload
         payload = {
@@ -75,11 +75,11 @@ def test_jito():
             data=json.dumps(payload)
         )
         
-        print(f"HTTP response code: {response.status_code}")
-        print(f"Jito response: {response.text}")
+        print(f"Código de respuesta HTTP: {response.status_code}")
+        print(f"Respuesta de Jito: {response.text}")
         
     except Exception as e:
-        print(f"Error during Jito test: {e}")
+        print(f"Error test: {e}")
 
 if __name__ == "__main__":
     test_jito()
