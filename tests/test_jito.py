@@ -1,6 +1,7 @@
 import requests
 import json
 import base58
+import time
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
@@ -8,26 +9,19 @@ from solders.transaction import VersionedTransaction
 from solders.message import MessageV0
 from solana.rpc.api import Client
 
-# Jito Block Engine URL (Frankfurt endpoint for testing)
 jito_frankfurt_url = "https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles"
-
-# Public RPC node just to fetch the recent blockhash
 rpc_client = Client("https://api.mainnet-beta.solana.com")
-
-# Official Jito account to receive the tip
 jito_tip_account = Pubkey.from_string("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5")
 
 def test_jito():
-    # Generate a temporary wallet for signing
+    print("Starting Jito bundle submission test...")
     temp_wallet = Keypair()
     print(f"Wallet temporal generada: {temp_wallet.pubkey()}")
     
     try:
-        # 1. Get recent blockhash
         blockhash_response = rpc_client.get_latest_blockhash()
         recent_blockhash = blockhash_response.value.blockhash
         
-        # 2. Instruction 1: Test transfer (0 SOL)
         test_instruction = transfer(
             TransferParams(
                 from_pubkey=temp_wallet.pubkey(),
@@ -36,7 +30,6 @@ def test_jito():
             )
         )
         
-        # 3. Instruction 2: Jito tip (10,000 lamports)
         tip_instruction = transfer(
             TransferParams(
                 from_pubkey=temp_wallet.pubkey(),
@@ -45,7 +38,6 @@ def test_jito():
             )
         )
         
-        # 4. Compile and sign the transaction
         message = MessageV0.try_compile(
             payer=temp_wallet.pubkey(),
             instructions=[test_instruction, tip_instruction],
@@ -54,11 +46,9 @@ def test_jito():
         )
         tx = VersionedTransaction(message, [temp_wallet])
         
-        # 5. Serialize to base58 as required by Jito
         tx_bytes = bytes(tx)
         tx_base58 = base58.b58encode(tx_bytes).decode('ascii')
         
-        # 6. Prepare the bundle payload
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -68,15 +58,21 @@ def test_jito():
             ]
         }
         
-        # 7. Send via HTTP POST
+        print("Enviando bundle a Jito...")
+        start_time = time.time()
+        
         response = requests.post(
             jito_frankfurt_url, 
             headers={"Content-Type": "application/json"},
             data=json.dumps(payload)
         )
         
+        end_time = time.time()
+        latency = (end_time - start_time) * 1000
+        
         print(f"Código de respuesta HTTP: {response.status_code}")
         print(f"Respuesta de Jito: {response.text}")
+        print(f"Latencia hasta la respuesta: {latency:.2f} ms")
         
     except Exception as e:
         print(f"Error test: {e}")

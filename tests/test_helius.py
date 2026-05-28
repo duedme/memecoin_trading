@@ -7,7 +7,6 @@ from solders.system_program import TransferParams, transfer
 from solders.transaction import VersionedTransaction
 from solders.message import MessageV0
 
-# Load environment variables
 load_dotenv()
 helius_api_key = os.getenv("HELIUS_API_KEY")
 
@@ -21,16 +20,13 @@ def test_helius_send():
     helius_url = f"https://mainnet.helius-rpc.com/?api-key={helius_api_key}"
     client = Client(helius_url)
     
-    # Generate temporary wallet for signing
     temp_wallet = Keypair()
     print(f"Wallet temporal generada: {temp_wallet.pubkey()}")
     
     try:
-        # 1. Get recent blockhash via Helius
         blockhash_resp = client.get_latest_blockhash()
         recent_blockhash = blockhash_resp.value.blockhash
         
-        # 2. Instruction: Test transfer (0 SOL)
         test_instruction = transfer(
             TransferParams(
                 from_pubkey=temp_wallet.pubkey(),
@@ -39,7 +35,6 @@ def test_helius_send():
             )
         )
         
-        # 3. Compile and sign the transaction
         message = MessageV0.try_compile(
             payer=temp_wallet.pubkey(),
             instructions=[test_instruction],
@@ -48,20 +43,22 @@ def test_helius_send():
         )
         tx = VersionedTransaction(message, [temp_wallet])
         
-        # 4. Send transaction through Helius RPC
-        print("Enviando transacción:")
+        print("Enviando transacción a Helius...")
         start_time = time.time()
         
-        # The RPC will simulate the transaction first and reject it for insufficient funds
-        response = client.send_transaction(tx)
-        end_time = time.time()
-        
-        latency = (end_time - start_time) * 1000
-        print(f"Respuesta de Helius: {response}")
-        print(f"Latencia: {latency:.2f} ms")
-        
+        # Bloque interno para capturar la latencia del rechazo
+        try:
+            response = client.send_transaction(tx)
+            end_time = time.time()
+            print(f"Respuesta de Helius: {response}")
+            print(f"Latencia: {(end_time - start_time) * 1000:.2f} ms")
+        except Exception as sim_error:
+            end_time = time.time()
+            print(f"Error esperado por falta de balance: {sim_error}")
+            print(f"Latencia hasta el rechazo: {(end_time - start_time) * 1000:.2f} ms")
+            
     except Exception as e:
-        print(f"Error esperado por falta de balance: {e}")
+        print(f"Error en la preparación de la transacción: {e}")
 
 if __name__ == "__main__":
     test_helius_send()
