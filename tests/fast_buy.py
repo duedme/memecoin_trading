@@ -72,8 +72,12 @@ def run_fast_purchase():
         print(f"Puedes validarla en: https://solscan.io/tx/{tx_response.value}")
 
     except Exception as e:
-        print(f"\n❌ Falló la ejecución. La red rechazó la orden por este motivo:")
-        print(e)
+        print(f"\n❌ Falló la ejecución. La puerta de Helius rechazó la conexión:")
+        if hasattr(e, 'response'):
+            print(f"Código HTTP: {e.response.status_code}")
+            print(f"Mensaje exacto del servidor: {e.response.text}")
+        else:
+            print(e)
 
 if __name__ == "__main__":
     run_fast_purchase()
