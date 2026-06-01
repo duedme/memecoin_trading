@@ -5,7 +5,6 @@ import requests
 from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
-from solana.rpc.api import Client
 
 # Load environment variables
 load_dotenv()
@@ -34,8 +33,6 @@ def run_fast_purchase():
     except Exception as e:
         print(f"Error con la llave privada: {e}")
         return
-        
-    rpc_client = Client(f"https://mainnet.helius-rpc.com/?api-key={helius_key}")
 
     try:
         print("1. Cotizando en Jupiter...")
@@ -49,12 +46,12 @@ def run_fast_purchase():
 
         print("2. Ensamblando transacción...")
         swap_url = "https://lite-api.jup.ag/swap/v1/swap"
-        payload = {
+        payload_jup = {
             "quoteResponse": quote_response, 
             "userPublicKey": str(real_wallet.pubkey()), 
             "wrapAndUnwrapSol": True
         }
-        swap_response = requests.post(swap_url, json=payload).json()
+        swap_response = requests.post(swap_url, json=payload_jup).json()
         swap_tx_b64 = swap_response["swapTransaction"]
 
         print("3. Firmando con fondos reales...")
@@ -62,22 +59,30 @@ def run_fast_purchase():
         tx = VersionedTransaction.from_bytes(raw_tx_bytes)
         tx = VersionedTransaction(tx.message, [real_wallet])
 
-        print("4. Enviando directamente a Solana por Helius...")
+        print("4. Enviando directamente a Solana por Helius (Modo Crudo)...")
+        # Empaquetamos la transaccion firmada a base64 para el RPC
+        tx_b64 = base64.b64encode(bytes(tx)).decode('utf-8')
+        
+        payload_rpc = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "sendTransaction",
+            "params": [tx_b64, {"encoding": "base64"}]
+        }
+
+        url = f"https://mainnet.helius-rpc.com/?api-key={helius_key}"
+        
         start_time = time.time()
-        tx_response = rpc_client.send_transaction(tx)
+        response = requests.post(url, json=payload_rpc)
         end_time = time.time()
 
-        print(f"\n✅ Transacción enviada a la red en {(end_time - start_time) * 1000:.2f} ms")
-        print(f"Firma pública: {tx_response.value}")
-        print(f"Puedes validarla en: https://solscan.io/tx/{tx_response.value}")
+        print(f"\nLatencia HTTP: {(end_time - start_time) * 1000:.2f} ms")
+        print(f"Código HTTP: {response.status_code}")
+        print(f"Respuesta cruda de Helius:\n{response.text}")
 
     except Exception as e:
-        print(f"\n❌ Falló la ejecución. La puerta de Helius rechazó la conexión:")
-        if hasattr(e, 'response'):
-            print(f"Código HTTP: {e.response.status_code}")
-            print(f"Mensaje exacto del servidor: {e.response.text}")
-        else:
-            print(e)
+        print(f"\n❌ Error interno de ejecución:")
+        print(e)
 
 if __name__ == "__main__":
     run_fast_purchase()
